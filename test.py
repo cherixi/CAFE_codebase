@@ -108,13 +108,21 @@ def main():
     os.environ["CUDA_VISIBLE_DEVICES"] = args.device
 
     time_str = time.strftime("%Y-%m-%d_%H-%M-%S", time.localtime())
-    exp_name = '[%s]_GAD_<%s>' % (args.dataset, time_str)
+    exp_name = '[%s]_GAD_[%s]' % (args.dataset, time_str)
 
     path = args.result_path + exp_name
     if not os.path.exists(path):
         os.makedirs(path)
+    
+    print("=" * 60)
+    print(f"Experiment: {exp_name}")
+    print(f"Output path: {path}")
+    print(f"Dataset: {args.dataset}, Split: {args.split}")
+    print(f"Model path: {args.model_path}")
+    print("=" * 60)
 
     # set random seed
+    print("\n[1/6] Setting random seed...")
     random.seed(args.random_seed)
     np.random.seed(args.random_seed)
     torch.manual_seed(args.random_seed)
@@ -123,29 +131,48 @@ def main():
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
 
+    print("[2/6] Loading dataset...")
     _, test_set = read_dataset(args)
+    print(f"    Dataset loaded: {len(test_set)} test samples")
+    
     sampler_test = data.RandomSampler(test_set)
 
+    print("[3/6] Creating data loader...")
     test_loader = data.DataLoader(test_set, args.test_batch, sampler=sampler_test, drop_last=False,
                                   collate_fn=collate_fn, num_workers=4, pin_memory=True)
+    print(f"    Data loader created: {len(test_loader)} batches")
 
+    print("[4/6] Building model...")
     model, criterion = build_model(args)
     model = torch.nn.DataParallel(model).cuda()
+    print("    Model built and moved to GPU")
 
-    pretrained_dict = torch.load(args.model_path)['state_dict']
+    print("[5/6] Loading model weights...")
+    pretrained_dict = torch.load(args.model_path, weights_only=False)['state_dict']
     new_state_dict = model.state_dict()
     for k, v in pretrained_dict.items():
         if k in new_state_dict:
             new_state_dict.update({k:v})
 
     model.load_state_dict(new_state_dict)
+    print(f"    Model weights loaded from {args.model_path}")
 
+    print("[6/6] Initializing evaluation metrics...")
     metrics = evaluation.GAD_Evaluation(args)
+    print("    Metrics initialized")
 
+    print("\n" + "=" * 60)
+    print("Starting evaluation...")
+    print("=" * 60 + "\n")
     test_log, result = validate(test_loader, model, criterion, metrics)
+    
+    print("\n" + "=" * 60)
+    print("EVALUATION RESULTS")
+    print("=" * 60)
     print("group mAP at 1.0: %.2f" % result['group_mAP_1.0'])
     print("group mAP at 0.5: %.2f" % result['group_mAP_0.5'])
     print("outlier mIoU: %.2f" % result['outlier_mIoU'])
+    print("=" * 60 + "\n")
 
 
 @torch.no_grad()
@@ -159,8 +186,14 @@ def validate(test_loader, model, criterion, metrics):
     print_freq = len(test_loader)
     name_to_vid = {name: i + 1 for i, name in enumerate(SEQS_CAFE)}
     file_path = path + '/pred_group_test_%s.txt' % args.split
+    
+    print(f"Processing {len(test_loader)} batches...")
+    print(f"Saving predictions to: {file_path}")
 
     for i, (images, targets, infos) in enumerate(metric_logger.log_every(test_loader, print_freq, header)):
+        if i % max(1, len(test_loader) // 10) == 0:
+            print(f"  Progress: {i}/{len(test_loader)} batches ({100*i//len(test_loader)}%)")
+        
         images = images.cuda()  # [B, T, 3, H, W]
         targets = [{k: v.cuda() for k, v in t.items()} for t in targets]
 
@@ -189,10 +222,12 @@ def validate(test_loader, model, criterion, metrics):
 
     # gather the stats from all processes
     metric_logger.synchronize_between_processes()
-    print("Averaged stats:", metric_logger)
+    print("\nAveraged stats:", metric_logger)
 
+    print("\nEvaluating predictions...")
     detections = open(file_path, "r")
     result = metrics.evaluate(detections)
+    print("Evaluation completed!")
 
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}, result
 

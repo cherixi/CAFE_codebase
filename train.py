@@ -119,7 +119,7 @@ def main():
     os.environ["CUDA_VISIBLE_DEVICES"] = args.device
 
     time_str = time.strftime("%Y-%m-%d_%H-%M-%S", time.localtime())
-    exp_name = '[%s]_GAD_<%s>' % (args.dataset, time_str)
+    exp_name = '[%s]_GAD_[%s]' % (args.dataset, time_str)
     save_path = './result/%s' % exp_name
 
     # set random seed

@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from roi_align.roi_align import RoIAlign
+from torchvision.ops import RoIAlign
 
 from .backbone import build_backbone
 from .group_transformer import build_group_transformer
@@ -23,7 +23,7 @@ class GADTR(nn.Module):
 
         # RoI Align
         self.crop_size = args.crop_size
-        self.roi_align = RoIAlign(crop_height=self.crop_size, crop_width=self.crop_size)
+        self.roi_align = RoIAlign(output_size=(self.crop_size, self.crop_size), spatial_scale=1.0, sampling_ratio=-1, aligned=True)
         self.fc_emb = nn.Linear(self.crop_size*self.crop_size*self.backbone.num_channels, self.hidden_dim)
         self.drop_emb = nn.Dropout(p=args.drop_rate)
 
@@ -115,7 +115,9 @@ class GADTR(nn.Module):
         boxes_idx_flat.requires_grad = False
 
         # extract actor features
-        actor_features = self.roi_align(features, boxes_flat, boxes_idx_flat)
+        # torchvision RoIAlign expects List[Tensor[N, 4]], so we split by batch
+        boxes_list = [boxes_flat[boxes_idx_flat == i] for i in range(bs * t)]
+        actor_features = self.roi_align(features, boxes_list)
         actor_features = torch.reshape(actor_features, (bs * t * n, -1))
         actor_features = self.fc_emb(actor_features)
         actor_features = F.relu(actor_features)
