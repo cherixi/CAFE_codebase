@@ -1,0 +1,10 @@
+# 忽略所有__pycache__目录
+__pycache__/
+# 忽略所有.pyc文件
+*.pyc
+# 忽略pth
+*.pth
+# 忽略cafe_checkpoints.zip  
+cafe_checkpoints.zip
+# 忽略gt_tracks.txt
+gt_tracks.txt
