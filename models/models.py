@@ -41,6 +41,10 @@ class GADTR(nn.Module):
         
         # Group activity classfication head
         self.group_emb = nn.Linear(self.hidden_dim, self.num_class + 1)
+
+        # Temporal weighting for actors and groups
+        self.actor_time_pool = nn.Linear(self.hidden_dim, 1)
+        self.group_time_pool = nn.Linear(self.hidden_dim, 1)
         
         # Distance mask threshold
         self.distance_threshold = args.distance_threshold
@@ -140,9 +144,20 @@ class GADTR(nn.Module):
         actor_hs = actor_hs.reshape(bs, t, n, -1)
         actor_hs = actor_features + actor_hs
 
+        group_hs = group_hs.reshape(bs, t, self.num_group_tokens, -1)
+
+        # temporal weighting
+        actor_time_logits = self.actor_time_pool(actor_hs.mean(dim=2)).squeeze(-1)      # [b, t]
+        actor_time_weight = torch.softmax(actor_time_logits, dim=1).unsqueeze(-1).unsqueeze(-1)
+        weighted_actor_hs = (actor_hs * actor_time_weight).sum(dim=1)
+
+        group_time_logits = self.group_time_pool(group_hs.mean(dim=2)).squeeze(-1)      # [b, t]
+        group_time_weight = torch.softmax(group_time_logits, dim=1).unsqueeze(-1).unsqueeze(-1)
+        weighted_group_hs = (group_hs * group_time_weight).sum(dim=1)
+
         # normalize
-        inst_repr = F.normalize(actor_hs.reshape(bs, t, n, -1).mean(dim=1), p=2, dim=2)
-        group_repr = F.normalize(group_hs.reshape(bs, t, self.num_group_tokens, -1).mean(dim=1), p=2, dim=2)
+        inst_repr = F.normalize(weighted_actor_hs, p=2, dim=2)
+        group_repr = F.normalize(weighted_group_hs, p=2, dim=2)
 
         # prediction heads
         outputs_class = self.class_emb(actor_hs)
@@ -156,10 +171,10 @@ class GADTR(nn.Module):
         membership = F.softmax(membership, dim=1)
 
         out = {
-            "pred_actions": outputs_class.reshape(bs, t, self.num_boxes, self.num_class + 1).mean(dim=1),
-            "pred_activities": outputs_group_class.reshape(bs, t, self.num_group_tokens, self.num_class + 1).mean(dim=1),
+            "pred_actions": (outputs_class.reshape(bs, t, self.num_boxes, self.num_class + 1) * actor_time_weight).sum(dim=1),
+            "pred_activities": (outputs_group_class.reshape(bs, t, self.num_group_tokens, self.num_class + 1) * group_time_weight).sum(dim=1),
             "membership": membership.reshape(bs, self.num_group_tokens, self.num_boxes),
-            "actor_embeddings": F.normalize(actor_hs.reshape(bs, t, n, -1).mean(dim=1), p=2, dim=2),
+            "actor_embeddings": F.normalize(weighted_actor_hs, p=2, dim=2),
         }
 
         return out
