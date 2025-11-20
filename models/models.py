@@ -1,3 +1,4 @@
+import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -5,7 +6,7 @@ import torch.nn.functional as F
 from torchvision.ops import RoIAlign
 
 from .backbone import build_backbone
-from .group_transformer import build_group_transformer
+from .hoi_graph import FrameHOIGraph, TemporalSelfAttention
 from .feed_forward import MLP
 
 
@@ -34,17 +35,19 @@ class GADTR(nn.Module):
         # Individual action classification head
         self.class_emb = nn.Linear(self.hidden_dim, self.num_class + 1)
 
-        # Group Transformer
-        self.group_transformer = build_group_transformer(args)
+        # Frame-level HOI graph and temporal modeling
+        self.frame_graph = FrameHOIGraph(self.hidden_dim, dropout=args.drop_rate)
+        self.temporal_encoder = TemporalSelfAttention(self.hidden_dim, nhead=args.gar_nheads, dropout=args.drop_rate)
+        self.time_pos_emb = nn.Embedding(self.num_frame, self.hidden_dim)
+
         self.num_group_tokens = args.num_group_tokens
-        self.group_query_emb = nn.Embedding(self.num_group_tokens * self.num_frame, self.hidden_dim)
+        self.group_query_emb = nn.Embedding(self.num_group_tokens, self.hidden_dim)
         
         # Group activity classfication head
         self.group_emb = nn.Linear(self.hidden_dim, self.num_class + 1)
 
-        # Temporal weighting for actors and groups
+        # Temporal weighting for actors
         self.actor_time_pool = nn.Linear(self.hidden_dim, 1)
-        self.group_time_pool = nn.Linear(self.hidden_dim, 1)
         
         # Distance mask threshold
         self.distance_threshold = args.distance_threshold
@@ -107,8 +110,7 @@ class GADTR(nn.Module):
         dummy_diag = (dummy_mask.unsqueeze(2).float() @ dummy_mask.unsqueeze(1).float()).nonzero(as_tuple=True)
         actor_mask = ~(actor_dummy_mask.bool())
         actor_mask[dummy_diag] = False
-        actor_mask = distance_mask + actor_mask
-        group_dummy_mask = dummy_mask
+        actor_mask = distance_mask | actor_mask
 
         boxes_flat[:, 0] = (boxes[:, 0] - boxes[:, 2] / 2) * ow
         boxes_flat[:, 1] = (boxes[:, 1] - boxes[:, 3] / 2) * oh
@@ -133,36 +135,33 @@ class GADTR(nn.Module):
         box_pos_emb = torch.reshape(box_pos_emb, (bs, t, n, -1))                        # [b, t, n, c]
         actor_features = actor_features + box_pos_emb
 
-        # group transformer
-        hs, actor_att, feature_att = self.group_transformer(src, actor_mask, group_dummy_mask,
-                                                            self.group_query_emb.weight, pos, actor_features)
-        # [1, bs * t, n + k, f'], [1, bs * t, k, n], [1, bs * t, n + k, oh x ow]   M: # group tokens, K: # boxes
+        # frame-level HOI graph
+        actor_graph_in = actor_features.reshape(bs * t, n, self.hidden_dim)
+        actor_graph_out, _ = self.frame_graph(actor_graph_in, attn_mask=actor_mask)
+        actor_graph_out = actor_graph_out.reshape(bs, t, n, self.hidden_dim)
 
-        actor_hs = hs[0, :, :n]
-        group_hs = hs[0, :, n:]
+        # temporal encoder across frames per actor
+        temporal_in = actor_graph_out.permute(0, 2, 1, 3).reshape(bs * n, t, self.hidden_dim)  # [b*n, t, c]
+        time_pos = self.time_pos_emb.weight[:t].unsqueeze(0)                                   # [1, t, c]
+        temporal_out, _ = self.temporal_encoder(temporal_in, pos=time_pos)
 
-        actor_hs = actor_hs.reshape(bs, t, n, -1)
-        actor_hs = actor_features + actor_hs
+        # temporal weighting per actor
+        actor_time_logits = self.actor_time_pool(temporal_out).squeeze(-1)                     # [b*n, t]
+        actor_time_weight = torch.softmax(actor_time_logits, dim=1).unsqueeze(-1)              # [b*n, t, 1]
+        actor_clip = (temporal_out * actor_time_weight).sum(dim=1).reshape(bs, n, self.hidden_dim)
 
-        group_hs = group_hs.reshape(bs, t, self.num_group_tokens, -1)
-
-        # temporal weighting
-        actor_time_logits = self.actor_time_pool(actor_hs.mean(dim=2)).squeeze(-1)      # [b, t]
-        actor_time_weight = torch.softmax(actor_time_logits, dim=1).unsqueeze(-1).unsqueeze(-1)
-        weighted_actor_hs = (actor_hs * actor_time_weight).sum(dim=1)
-
-        group_time_logits = self.group_time_pool(group_hs.mean(dim=2)).squeeze(-1)      # [b, t]
-        group_time_weight = torch.softmax(group_time_logits, dim=1).unsqueeze(-1).unsqueeze(-1)
-        weighted_group_hs = (group_hs * group_time_weight).sum(dim=1)
+        # group tokens attend to actor clip features
+        group_queries = self.group_query_emb.weight.unsqueeze(0).repeat(bs, 1, 1)              # [b, k, c]
+        group_attn = torch.softmax(torch.matmul(group_queries, actor_clip.transpose(1, 2)) / math.sqrt(self.hidden_dim), dim=-1)
+        group_repr_raw = torch.bmm(group_attn, actor_clip)                                      # [b, k, c]
+        group_repr = F.normalize(group_repr_raw, p=2, dim=2)
 
         # normalize
-        inst_repr = F.normalize(weighted_actor_hs, p=2, dim=2)
-        group_repr = F.normalize(weighted_group_hs, p=2, dim=2)
+        inst_repr = F.normalize(actor_clip, p=2, dim=2)
 
         # prediction heads
-        outputs_class = self.class_emb(actor_hs)
-
-        outputs_group_class = self.group_emb(group_hs)
+        outputs_class = self.class_emb(actor_clip)                      # [b, n, num_class+1]
+        outputs_group_class = self.group_emb(group_repr_raw)            # [b, k, num_class+1]
 
         outputs_actor_emb = self.actor_match_emb(inst_repr)
         outputs_group_emb = self.group_match_emb(group_repr)
@@ -171,10 +170,10 @@ class GADTR(nn.Module):
         membership = F.softmax(membership, dim=1)
 
         out = {
-            "pred_actions": (outputs_class.reshape(bs, t, self.num_boxes, self.num_class + 1) * actor_time_weight).sum(dim=1),
-            "pred_activities": (outputs_group_class.reshape(bs, t, self.num_group_tokens, self.num_class + 1) * group_time_weight).sum(dim=1),
+            "pred_actions": outputs_class,
+            "pred_activities": outputs_group_class,
             "membership": membership.reshape(bs, self.num_group_tokens, self.num_boxes),
-            "actor_embeddings": F.normalize(weighted_actor_hs, p=2, dim=2),
+            "actor_embeddings": F.normalize(actor_clip, p=2, dim=2),
         }
 
         return out
