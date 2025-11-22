@@ -256,3 +256,9 @@ outlier mIoU: 61.69
 Loss: 0.2010
 Group class error: 0.29
 ----- Test at epoch #29
+Loss: 3.5453
+Group class error: 48.04
+group mAP at 1.0: 5.47
+group mAP at 0.5: 23.98
+outlier mIoU: 62.44
+----- Train at epoch #30
