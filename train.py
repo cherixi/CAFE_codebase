@@ -19,6 +19,7 @@ import util.misc as utils
 import util.logger as loggers
 from dataloader.dataloader import read_dataset
 import evaluation.cafe_eval as evaluation
+from util import experiment
 
 parser = argparse.ArgumentParser(description='Group Activity Detection train code', add_help=False)
 
@@ -180,6 +181,12 @@ def main():
 
     metrics = evaluation.GAD_Evaluation(args)
 
+    # experiment logging
+    history = {"train": [], "val": []}
+    best = {}
+    args_json_path = os.path.join(save_path, "args.json")
+    experiment.save_args(args_json_path, vars(args))
+
     # training phase
     for epoch in range(start_epoch, args.epochs + 1):
         print_log(save_path, '----- %s at epoch #%d' % ("Train", epoch))
@@ -189,6 +196,9 @@ def main():
         print('Current learning rate is %f' % scheduler.get_last_lr()[0])
         scheduler.step()
 
+        # record train metrics
+        history = experiment.update_history(history, "train", epoch, train_log)
+
         if epoch % args.test_freq == 0:
             print_log(save_path, '----- %s at epoch #%d' % ("Test", epoch))
             test_log, result = validate(test_loader, model, criterion, metrics, epoch)
@@ -197,6 +207,23 @@ def main():
             print_log(save_path, "group mAP at 1.0: %.2f" % result['group_mAP_1.0'])
             print_log(save_path, "group mAP at 0.5: %.2f" % result['group_mAP_0.5'])
             print_log(save_path, "outlier mIoU: %.2f" % result['outlier_mIoU'])
+
+            # merge metrics
+            val_metrics = dict(test_log)
+            val_metrics.update({
+                "group_mAP_1.0": result['group_mAP_1.0'],
+                "group_mAP_0.5": result['group_mAP_0.5'],
+                "outlier_mIoU": result['outlier_mIoU'],
+            })
+            history = experiment.update_history(history, "val", epoch, val_metrics)
+            best = experiment.update_best(best, epoch, {**val_metrics, "loss": test_log['loss']})
+
+            # save summary and curves
+            summary_path = os.path.join(save_path, "summary.json")
+            experiment.save_summary(summary_path, vars(args), history, best)
+            curves_path = os.path.join(save_path, "curves.png")
+            experiment.plot_curves(curves_path, history)
+            print_log(save_path, f"Updated summary and curves at epoch {epoch}")
 
             state = {
                 'epoch': epoch,
