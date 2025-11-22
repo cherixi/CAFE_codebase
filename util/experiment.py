@@ -1,3 +1,4 @@
+import io
 import json
 import os
 from typing import Dict, List
@@ -16,7 +17,20 @@ def ensure_dir(path: str):
 def save_args(path: str, args: Dict):
     ensure_dir(os.path.dirname(path))
     with open(path, "w") as f:
-        json.dump(args, f, indent=2)
+        clean_args = {k: _to_serializable(v) for k, v in args.items()}
+        json.dump(clean_args, f, indent=2)
+
+
+def _to_serializable(val):
+    # file-like objects: store path/name
+    if isinstance(val, io.IOBase):
+        return getattr(val, "name", str(val))
+    # try default json conversion
+    try:
+        json.dumps(val)
+        return val
+    except TypeError:
+        return str(val)
 
 
 def update_history(history: Dict, split: str, epoch: int, metrics: Dict):
