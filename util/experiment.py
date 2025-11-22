@@ -18,7 +18,7 @@ def save_args(path: str, args: Dict):
     ensure_dir(os.path.dirname(path))
     with open(path, "w") as f:
         clean_args = {k: _to_serializable(v) for k, v in args.items()}
-        json.dump(clean_args, f, indent=2)
+        json.dump(clean_args, f, indent=2, default=_json_default)
 
 
 def _to_serializable(val):
@@ -31,6 +31,10 @@ def _to_serializable(val):
         return val
     except TypeError:
         return str(val)
+
+
+def _json_default(obj):
+    return _to_serializable(obj)
 
 
 def update_history(history: Dict, split: str, epoch: int, metrics: Dict):
@@ -52,9 +56,10 @@ def update_best(best: Dict, epoch: int, metrics: Dict, keys=("group_mAP_0.5", "g
 
 def save_summary(path: str, args: Dict, history: Dict, best: Dict):
     ensure_dir(os.path.dirname(path))
-    summary = {"args": args, "history": history, "best": best}
+    clean_args = {k: _to_serializable(v) for k, v in args.items()}
+    summary = {"args": clean_args, "history": history, "best": best}
     with open(path, "w") as f:
-        json.dump(summary, f, indent=2)
+        json.dump(summary, f, indent=2, default=_json_default)
 
 
 def plot_curves(path: str, history: Dict):
