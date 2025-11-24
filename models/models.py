@@ -35,10 +35,10 @@ class GADTR(nn.Module):
         # Individual action classification head
         self.class_emb = nn.Linear(self.hidden_dim, self.num_class + 1)
 
-        # Group Transformer
+        # Group Transformer (shared group queries across frames)
         self.group_transformer = build_group_transformer(args)
         self.num_group_tokens = args.num_group_tokens
-        self.group_query_emb = nn.Embedding(self.num_group_tokens * self.num_frame, self.hidden_dim)
+        self.group_query_emb = nn.Embedding(self.num_group_tokens, self.hidden_dim)
         
         # Group activity classfication head
         self.group_emb = nn.Linear(self.hidden_dim, self.num_class + 1)

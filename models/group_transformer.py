@@ -38,6 +38,9 @@ class Transformer(nn.Module):
         _, _, n, _ = actor_embed.shape
         src = src.reshape(bs * t, c, h, w).flatten(2).permute(2, 0, 1)              # [h x w, bs x t, c]
         pos_embed = pos_embed.flatten(2).permute(2, 0, 1)
+        # allow shared group queries across frames: [k, c] -> [k, t, c]; or keep legacy [k*t, c]
+        if group_embed.dim() == 2:
+            group_embed = group_embed.unsqueeze(1).repeat(1, t, 1)                  # [k, t, c]
         group_embed = group_embed.reshape(-1, t, c)
         group_embed = group_embed.unsqueeze(1).repeat(1, bs, 1, 1).reshape(-1, bs * t, c)
         actor_embed = actor_embed.reshape(bs * t, -1, c).permute(1, 0, 2)           # [n, bs x t, c]
