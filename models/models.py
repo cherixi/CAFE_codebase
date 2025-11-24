@@ -38,17 +38,17 @@ class GADTR(nn.Module):
         # Group Transformer
         self.group_transformer = build_group_transformer(args)
         self.num_group_tokens = args.num_group_tokens
-        self.group_query_emb = nn.Embedding(self.num_group_tokens * self.num_frame, self.hidden_dim)
+        # shared group queries across frames
+        self.group_query_emb = nn.Embedding(self.num_group_tokens, self.hidden_dim)
         
         # Group activity classfication head
         self.group_emb = nn.Linear(self.hidden_dim, self.num_class + 1)
 
-        # HOI mapping + temporal modeling
+        # HOI mapping + temporal modeling (actor only)
         self.frame_graph = FrameHOIGraph(self.hidden_dim, dropout=args.drop_rate)
         self.temporal_encoder = TemporalSelfAttention(self.hidden_dim, nhead=args.gar_nheads, dropout=args.drop_rate)
         self.time_pos_emb = nn.Embedding(self.num_frame, self.hidden_dim)
         self.actor_time_pool = nn.Linear(self.hidden_dim, 1)
-        self.group_time_pool = nn.Linear(self.hidden_dim, 1)
         
         # Distance mask threshold
         self.distance_threshold = args.distance_threshold
@@ -163,12 +163,8 @@ class GADTR(nn.Module):
         actor_time_weight = torch.softmax(actor_time_logits, dim=1).unsqueeze(-1)                    # [b*n, t, 1]
         actor_clip = (temporal_actor_out * actor_time_weight).sum(dim=1).reshape(bs, n, self.hidden_dim)
 
-        # temporal modeling for group tokens
-        temporal_group_in = group_hs.permute(0, 2, 1, 3).reshape(bs * self.num_group_tokens, t, self.hidden_dim)
-        temporal_group_out, _ = self.temporal_encoder(temporal_group_in, pos=time_pos)
-        group_time_logits = self.group_time_pool(temporal_group_out).squeeze(-1)                      # [b*k, t]
-        group_time_weight = torch.softmax(group_time_logits, dim=1).unsqueeze(-1)                     # [b*k, t, 1]
-        group_clip = (temporal_group_out * group_time_weight).sum(dim=1).reshape(bs, self.num_group_tokens, self.hidden_dim)
+        # group tokens: frame-level outputs -> clip-level via mean over time (no temporal attention)
+        group_clip = group_hs.mean(dim=1)                                                            # [b, k, c]
 
         # normalize
         inst_repr = F.normalize(actor_clip, p=2, dim=2)
