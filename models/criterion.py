@@ -61,28 +61,25 @@ class SetCriterion(nn.Module):
 
         loss_ce = 0.0
 
-        src_logits_log = None
-        tgt_classes_log = None
+        logits_log_list = []
+        targets_log_list = []
 
         for batch_idx in range(src_logits.shape[0]):
             dummy_idx = targets[batch_idx]["dummy_idx"].squeeze()
             non_dummy_idx = dummy_idx.nonzero(as_tuple=True)
-            src_logit = src_logits[batch_idx][non_dummy_idx].unsqueeze(0)
-            target_class = target_classes[batch_idx][non_dummy_idx].unsqueeze(0)
+            src_logit = src_logits[batch_idx][non_dummy_idx].unsqueeze(0)           # [1, M, C]
+            target_class = target_classes[batch_idx][non_dummy_idx].unsqueeze(0)    # [1, M]
             loss_ce += F.cross_entropy(src_logit.transpose(1, 2), target_class, self.empty_weight)
 
-            if src_logits_log is None:
-                src_logits_log = src_logit
-                tgt_classes_log = target_class
-            else:
-                src_logits_log = torch.cat([src_logits_log.squeeze(), src_logit.squeeze()], dim=0)
-                tgt_classes_log = torch.cat([tgt_classes_log.squeeze(), target_class.squeeze()], dim=0)
+            logits_log_list.append(src_logit.squeeze(0))                            # [M, C]
+            targets_log_list.append(target_class.squeeze(0))                        # [M]
 
         loss_ce /= src_logits.shape[0]
         losses = {'loss_ce': loss_ce}
 
-        if log:
-            # TODO this should probably be a separate loss, not hacked in this one here
+        if log and len(logits_log_list) > 0:
+            src_logits_log = torch.cat(logits_log_list, dim=0)                     # [sum_M, C]
+            tgt_classes_log = torch.cat(targets_log_list, dim=0)                   # [sum_M]
             losses['class_error'] = 100 - accuracy(src_logits_log, tgt_classes_log)[0]
 
         return losses
