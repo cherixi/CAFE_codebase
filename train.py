@@ -35,7 +35,7 @@ parser.add_argument('--num_frame', default=5, type=int, help='number of frames f
 parser.add_argument('--num_class', default=6, type=int, help='number of activity classes')
 
 # Backbone parameters
-parser.add_argument('--backbone', default='resnet18', type=str, help='feature extraction backbone')
+parser.add_argument('--backbone', default='resnet50', type=str, help='feature extraction backbone')
 parser.add_argument('--dilation', action='store_true', help='use dilation or not')
 parser.add_argument('--frozen_batch_norm', action='store_true', help='use frozen batch normalization')
 parser.add_argument('--hidden_dim', default=256, type=int, help='transformer channel dimension')
