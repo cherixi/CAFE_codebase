@@ -11,6 +11,7 @@ import time
 import random
 import numpy as np
 import argparse
+import matplotlib.pyplot as plt
 
 from models import build_model
 from util.utils import *
@@ -112,6 +113,42 @@ SEQS_CAFE = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 
 ACTIVITIES = ['Queueing', 'Ordering', 'Drinking', 'Working', 'Fighting', 'Selfie', 'Individual', 'No']
 
 
+def plot_curves(train_loss, test_loss, map05, map10, save_path):
+    plt.figure(figsize=(16, 6))
+
+    # Loss Curve
+    plt.subplot(1, 2, 1)
+    if train_loss:
+        x_train, y_train = zip(*train_loss)
+        plt.plot(x_train, y_train, label='Train Loss', marker='o')
+    if test_loss:
+        x_test, y_test = zip(*test_loss)
+        plt.plot(x_test, y_test, label='Test Loss', marker='x')
+    plt.title('Loss Curve')
+    plt.xlabel('Epoch')
+    plt.ylabel('Loss')
+    plt.legend()
+    plt.grid(True)
+
+    # mAP Curve
+    plt.subplot(1, 2, 2)
+    if map05:
+        x_05, y_05 = zip(*map05)
+        plt.plot(x_05, y_05, label='mAP@0.5', marker='o')
+    if map10:
+        x_10, y_10 = zip(*map10)
+        plt.plot(x_10, y_10, label='mAP@1.0', marker='x')
+    plt.title('mAP Curve')
+    plt.xlabel('Epoch')
+    plt.ylabel('mAP')
+    plt.legend()
+    plt.grid(True)
+
+    plt.tight_layout()
+    plt.savefig(os.path.join(save_path, 'learning_curves.png'))
+    plt.close()
+
+
 def main():
     global args, path
 
@@ -179,6 +216,12 @@ def main():
 
     metrics = evaluation.GAD_Evaluation(args)
 
+    # Lists for plotting
+    train_loss_list = []
+    test_loss_list = []
+    map05_list = []
+    map10_list = []
+
     # training phase
     for epoch in range(start_epoch, args.epochs + 1):
         print_log(save_path, '----- %s at epoch #%d' % ("Train", epoch))
@@ -186,6 +229,10 @@ def main():
         print_log(save_path, 'Loss: %.4f' % (train_log['loss']))
         print_log(save_path, 'Group class error: %.2f' % (train_log['group_class_error']))
         print('Current learning rate is %f' % scheduler.get_last_lr()[0])
+        
+        # Update train loss
+        train_loss_list.append((epoch, train_log['loss']))
+        
         scheduler.step()
 
         if epoch % args.test_freq == 0:
@@ -196,6 +243,12 @@ def main():
             print_log(save_path, "group mAP at 1.0: %.2f" % result['group_mAP_1.0'])
             print_log(save_path, "group mAP at 0.5: %.2f" % result['group_mAP_0.5'])
             print_log(save_path, "outlier mIoU: %.2f" % result['outlier_mIoU'])
+
+            # Update test metrics and plot
+            test_loss_list.append((epoch, test_log['loss']))
+            map05_list.append((epoch, result['group_mAP_0.5']))
+            map10_list.append((epoch, result['group_mAP_1.0']))
+            plot_curves(train_loss_list, test_loss_list, map05_list, map10_list, save_path)
 
             state = {
                 'epoch': epoch,
