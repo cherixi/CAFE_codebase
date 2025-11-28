@@ -25,7 +25,7 @@ parser = argparse.ArgumentParser(description='Group Activity Detection train cod
 parser.add_argument('--dataset', default='cafe', type=str, help='dataset name')
 parser.add_argument('--val_mode', action='store_true')
 parser.add_argument('--split', default='place', type=str, help='dataset split. place or view')
-parser.add_argument('--data_path', default='../Dataset/', type=str, help='data path')
+parser.add_argument('--data_path', default='/share/share/aixi/Cafe_Dataset/Cafe_Dataset/Cafe_Dataset/Dataset/', type=str, help='data path')
 parser.add_argument('--image_width', default=1280, type=int, help='Image width to resize')
 parser.add_argument('--image_height', default=720, type=int, help='Image height to resize')
 parser.add_argument('--random_sampling', action='store_true', help='random sampling strategy')
