@@ -155,6 +155,20 @@ class CafeDataset(data.Dataset):
         self.num_class = args.num_class
         self.is_training = is_training
         self.videomae_feat_dir = './videomae_features'
+
+        # Safety check for VideoMAE features
+        if not os.path.exists(self.videomae_feat_dir):
+            print(f"\n{'!'*80}")
+            print(f"WARNING: VideoMAE feature directory '{self.videomae_feat_dir}' NOT FOUND!")
+            print(f"Training will proceed with ZERO vectors, effectively DISABLING VideoMAE enhancement.")
+            print(f"Please run 'extract_videomae_feats.py' first to generate features.")
+            print(f"{'!'*80}\n")
+        elif not any(fname.endswith('.npy') for fname in os.listdir(self.videomae_feat_dir)):
+            print(f"\n{'!'*80}")
+            print(f"WARNING: VideoMAE feature directory '{self.videomae_feat_dir}' exists but contains NO .npy files!")
+            print(f"Training will proceed with ZERO vectors.")
+            print(f"{'!'*80}\n")
+
         self.transform = transforms.Compose([
             transforms.Resize((args.image_height, args.image_width)),
             transforms.ToTensor(),
