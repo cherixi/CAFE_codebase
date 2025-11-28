@@ -8,6 +8,7 @@ from torchvision.ops import RoIAlign
 from .backbone import build_backbone
 from .hoi_graph import FrameHOIGraph, TemporalSelfAttention
 from .feed_forward import MLP
+from .videomae_adapter import VideoMAEAdapter
 
 
 class GADTR(nn.Module):
@@ -43,6 +44,11 @@ class GADTR(nn.Module):
         self.num_group_tokens = args.num_group_tokens
         self.group_query_emb = nn.Embedding(self.num_group_tokens, self.hidden_dim)
         
+        # VideoMAE Adapter
+        self.use_mae = True
+        if self.use_mae:
+            self.mae_adapter = VideoMAEAdapter(768, self.hidden_dim, args.drop_rate)
+
         # Group activity classfication head
         self.group_emb = nn.Linear(self.hidden_dim, self.num_class + 1)
 
@@ -75,11 +81,12 @@ class GADTR(nn.Module):
 
         return torch.sqrt(dist)
 
-    def forward(self, x, boxes, dummy_mask):
+    def forward(self, x, boxes, dummy_mask, mae_feats=None):
         """
         :param x: [B, T, 3, H, W]
         :param boxes: [B, T, N, 4]
         :param dummy_mask: [B, N]
+        :param mae_feats: [B, 768]
         :return:
         """
         bs, t, _, h, w = x.shape
@@ -152,6 +159,11 @@ class GADTR(nn.Module):
 
         # group tokens attend to actor clip features
         group_queries = self.group_query_emb.weight.unsqueeze(0).repeat(bs, 1, 1)              # [b, k, c]
+
+        # Inject VideoMAE features
+        if self.use_mae and mae_feats is not None:
+            actor_clip, group_queries = self.mae_adapter(actor_clip, group_queries, mae_feats)
+
         group_attn = torch.softmax(torch.matmul(group_queries, actor_clip.transpose(1, 2)) / math.sqrt(self.hidden_dim), dim=-1)
         group_repr_raw = torch.bmm(group_attn, actor_clip)                                      # [b, k, c]
         group_repr = F.normalize(group_repr_raw, p=2, dim=2)

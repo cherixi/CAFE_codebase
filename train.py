@@ -225,12 +225,13 @@ def train(train_loader, model, criterion, optimizer, epoch):
 
         boxes = torch.stack([t['boxes'] for t in targets])
         dummy_mask = torch.stack([t['actions'] == args.num_class + 1 for t in targets]).squeeze()
+        mae_feats = torch.stack([t['mae_feat'] for t in targets]).cuda()
 
         num_batch = images.shape[0]
         num_frame = images.shape[1]
 
         # compute output
-        outputs = model(images, boxes, dummy_mask)
+        outputs = model(images, boxes, dummy_mask, mae_feats)
 
         loss_dict = criterion(outputs, targets, log=False)
         weight_dict = criterion.weight_dict
@@ -287,9 +288,10 @@ def validate(test_loader, model, criterion, metrics, epoch):
 
         boxes = torch.stack([t['boxes'] for t in targets])
         dummy_mask = torch.stack([t['actions'] == args.num_class + 1 for t in targets]).squeeze()
+        mae_feats = torch.stack([t['mae_feat'] for t in targets]).cuda()
 
         # compute output
-        outputs = model(images, boxes, dummy_mask)
+        outputs = model(images, boxes, dummy_mask, mae_feats)
 
         loss_dict = criterion(outputs, targets)
         weight_dict = criterion.weight_dict

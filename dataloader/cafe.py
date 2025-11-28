@@ -154,6 +154,7 @@ class CafeDataset(data.Dataset):
         self.num_frame = args.num_frame
         self.num_class = args.num_class
         self.is_training = is_training
+        self.videomae_feat_dir = './videomae_features'
         self.transform = transforms.Compose([
             transforms.Resize((args.image_height, args.image_width)),
             transforms.ToTensor(),
@@ -212,6 +213,17 @@ class CafeDataset(data.Dataset):
         images, boxes, gt_boxes, actions, activities, members, membership = [], [], [], [], [], [], []
         targets = {}
         fids = []
+
+        # Load VideoMAE feature
+        # Assuming all frames in a clip belong to the same video/clip ID
+        # We use the first frame to determine the clip ID
+        first_frame_info = frames[0][0] # (vid, cid)
+        vid, cid = first_frame_info
+        feat_path = os.path.join(self.videomae_feat_dir, f"{vid}_{cid}.npy")
+        if os.path.exists(feat_path):
+            mae_feat = torch.from_numpy(np.load(feat_path)).float().squeeze(0) # [768]
+        else:
+            mae_feat = torch.zeros(768).float()
 
         for i, (frame, fid) in enumerate(frames):
             vid, cid = frame
@@ -281,6 +293,7 @@ class CafeDataset(data.Dataset):
         targets['gt_boxes'] = gt_boxes
         targets['members'] = members
         targets['membership'] = membership
+        targets['mae_feat'] = mae_feat
 
         infos = {'vid': vid, 'sid': cid, 'fid': fids, 'key_frame': self.anns[frame]['key_frame']}
 
