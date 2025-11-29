@@ -8,3 +8,9 @@ __pycache__/
 cafe_checkpoints.zip
 # 忽略gt_tracks.txt
 gt_tracks.txt
+
+# 忽略videomae_features文件夹
+videomae_features/
+
+# 忽略outputs文件夹
+outputs/

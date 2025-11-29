@@ -8,6 +8,7 @@ from .backbone import build_backbone
 from .group_transformer import build_group_transformer
 from .feed_forward import MLP
 from .hoi_graph import FrameHOIGraph, TemporalSelfAttention
+from .videomae_adapter import VideoMAEAdapter
 
 
 class GADTR(nn.Module):
@@ -57,6 +58,8 @@ class GADTR(nn.Module):
         self.actor_match_emb = nn.Linear(self.hidden_dim, self.hidden_dim)
         self.group_match_emb = nn.Linear(self.hidden_dim, self.hidden_dim)
 
+        self.videomae_adapter = VideoMAEAdapter(global_dim=768, hidden_dim=self.hidden_dim)
+
         self.relu = F.relu
 
         for name, m in self.named_modules():
@@ -76,7 +79,7 @@ class GADTR(nn.Module):
 
         return torch.sqrt(dist)
 
-    def forward(self, x, boxes, dummy_mask):
+    def forward(self, x, boxes, dummy_mask, mae_feats=None):
         """
         :param x: [B, T, 3, H, W]
         :param boxes: [B, T, N, 4]
@@ -148,6 +151,16 @@ class GADTR(nn.Module):
         actor_hs = actor_hs.reshape(bs, t, n, -1)
         actor_hs = actor_features + actor_hs
         group_hs = group_hs.reshape(bs, t, self.num_group_tokens, -1)
+
+        if mae_feats is not None:
+            mae_feats_expanded = mae_feats.unsqueeze(1).repeat(1, t, 1).reshape(bs * t, -1)
+            actor_hs_flat = actor_hs.reshape(bs * t, n, -1)
+            group_hs_flat = group_hs.reshape(bs * t, self.num_group_tokens, -1)
+            
+            actor_hs_flat, group_hs_flat = self.videomae_adapter(actor_hs_flat, group_hs_flat, mae_feats_expanded)
+            
+            actor_hs = actor_hs_flat.reshape(bs, t, n, -1)
+            group_hs = group_hs_flat.reshape(bs, t, self.num_group_tokens, -1)
 
         # frame-level HOI mapping on actor tokens
         actor_graph_in = actor_hs.reshape(bs * t, n, self.hidden_dim)

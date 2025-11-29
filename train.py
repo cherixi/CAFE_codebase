@@ -33,6 +33,7 @@ parser.add_argument('--image_height', default=720, type=int, help='Image height 
 parser.add_argument('--random_sampling', action='store_true', help='random sampling strategy')
 parser.add_argument('--num_frame', default=5, type=int, help='number of frames for each clip')
 parser.add_argument('--num_class', default=6, type=int, help='number of activity classes')
+parser.add_argument('--videomae_feats_path', default=None, type=str, help='path to videomae features')
 
 # Backbone parameters
 parser.add_argument('--backbone', default='resnet18', type=str, help='feature extraction backbone')
@@ -253,12 +254,14 @@ def train(train_loader, model, criterion, optimizer, epoch):
 
         boxes = torch.stack([t['boxes'] for t in targets])
         dummy_mask = torch.stack([t['actions'] == args.num_class + 1 for t in targets]).squeeze()
+        
+        mae_feats = torch.stack([t['mae_feats'] for t in targets]) if 'mae_feats' in targets[0] else None
 
         num_batch = images.shape[0]
         num_frame = images.shape[1]
 
         # compute output
-        outputs = model(images, boxes, dummy_mask)
+        outputs = model(images, boxes, dummy_mask, mae_feats)
 
         loss_dict = criterion(outputs, targets, log=False)
         weight_dict = criterion.weight_dict
@@ -315,9 +318,11 @@ def validate(test_loader, model, criterion, metrics, epoch):
 
         boxes = torch.stack([t['boxes'] for t in targets])
         dummy_mask = torch.stack([t['actions'] == args.num_class + 1 for t in targets]).squeeze()
+        
+        mae_feats = torch.stack([t['mae_feats'] for t in targets]) if 'mae_feats' in targets[0] else None
 
         # compute output
-        outputs = model(images, boxes, dummy_mask)
+        outputs = model(images, boxes, dummy_mask, mae_feats)
 
         loss_dict = criterion(outputs, targets)
         weight_dict = criterion.weight_dict
