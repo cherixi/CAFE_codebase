@@ -1,0 +1,39 @@
+--------------------Number of parameters--------------------
+Number of full model parameters: 16373073
+----- Train at epoch #1
+Loss: 2.2193
+Group class error: 69.70
+----- Test at epoch #1
+Loss: 2.3380
+Group class error: 62.11
+group mAP at 1.0: 0.06
+group mAP at 0.5: 4.66
+outlier mIoU: 53.01
+----- Train at epoch #2
+Loss: 1.3052
+Group class error: 34.13
+----- Test at epoch #2
+Loss: 1.9937
+Group class error: 42.16
+group mAP at 1.0: 4.40
+group mAP at 0.5: 24.74
+outlier mIoU: 61.08
+----- Train at epoch #3
+Loss: 0.9442
+Group class error: 21.41
+----- Test at epoch #3
+Loss: 2.0992
+Group class error: 40.88
+group mAP at 1.0: 7.35
+group mAP at 0.5: 25.77
+outlier mIoU: 62.12
+----- Train at epoch #4
+Loss: 0.8043
+Group class error: 17.05
+----- Test at epoch #4
+Loss: 2.1805
+Group class error: 44.21
+group mAP at 1.0: 8.16
+group mAP at 0.5: 28.41
+outlier mIoU: 63.45
+----- Train at epoch #5
