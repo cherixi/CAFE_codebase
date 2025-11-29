@@ -11,6 +11,8 @@ import time
 import random
 import numpy as np
 import argparse
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
 from models import build_model
