@@ -58,6 +58,7 @@ class GADTR(nn.Module):
         self.actor_match_emb = nn.Linear(self.hidden_dim, self.hidden_dim)
         self.group_match_emb = nn.Linear(self.hidden_dim, self.hidden_dim)
 
+        print("Initializing VideoMAE Adapter...")
         self.videomae_adapter = VideoMAEAdapter(global_dim=768, hidden_dim=self.hidden_dim)
 
         self.relu = F.relu
@@ -153,6 +154,10 @@ class GADTR(nn.Module):
         group_hs = group_hs.reshape(bs, t, self.num_group_tokens, -1)
 
         if mae_feats is not None:
+            if not getattr(self, 'has_printed_videomae_status', False):
+                print("VideoMAE features detected in forward pass. Applying enhancement...")
+                self.has_printed_videomae_status = True
+
             mae_feats_expanded = mae_feats.unsqueeze(1).repeat(1, t, 1).reshape(bs * t, -1)
             actor_hs_flat = actor_hs.reshape(bs * t, n, -1)
             group_hs_flat = group_hs.reshape(bs * t, self.num_group_tokens, -1)

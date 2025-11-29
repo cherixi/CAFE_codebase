@@ -125,6 +125,19 @@ def main():
     exp_name = '[%s]_GAD_[%s]' % (args.dataset, time_str)
     save_path = './result/%s' % exp_name
 
+    if not os.path.exists(save_path):
+        os.makedirs(save_path)
+
+    if args.videomae_feats_path:
+        print_log(save_path, f"----------------------------------------------------------------")
+        print_log(save_path, f"VideoMAE Enhancement: ENABLED")
+        print_log(save_path, f"Feature Path: {args.videomae_feats_path}")
+        print_log(save_path, f"----------------------------------------------------------------")
+    else:
+        print_log(save_path, f"----------------------------------------------------------------")
+        print_log(save_path, f"VideoMAE Enhancement: DISABLED")
+        print_log(save_path, f"----------------------------------------------------------------")
+
     # set random seed
     random.seed(args.random_seed)
     np.random.seed(args.random_seed)
