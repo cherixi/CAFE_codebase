@@ -287,6 +287,8 @@ class CafeDataset(data.Dataset):
             feat_path = os.path.join(self.videomae_feats_path, f'{vid}_{cid}.npy')
             if os.path.exists(feat_path):
                 mae_feats = np.load(feat_path)
+                if mae_feats.ndim == 2:
+                    mae_feats = mae_feats.squeeze(0)
                 targets['mae_feats'] = torch.from_numpy(mae_feats).float()
             else:
                 targets['mae_feats'] = torch.zeros(768).float()

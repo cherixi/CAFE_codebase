@@ -158,6 +158,9 @@ class GADTR(nn.Module):
                 print("VideoMAE features detected in forward pass. Applying enhancement...")
                 self.has_printed_videomae_status = True
 
+            if mae_feats.dim() == 3:
+                mae_feats = mae_feats.squeeze(1)
+
             mae_feats_expanded = mae_feats.unsqueeze(1).repeat(1, t, 1).reshape(bs * t, -1)
             actor_hs_flat = actor_hs.reshape(bs * t, n, -1)
             group_hs_flat = group_hs.reshape(bs * t, self.num_group_tokens, -1)
