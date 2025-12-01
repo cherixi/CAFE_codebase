@@ -38,7 +38,17 @@ class GADTR(nn.Module):
 
         # Frame-level HOI graph and temporal modeling
         self.frame_graph = FrameHOIGraph(self.hidden_dim, dropout=args.drop_rate)
-        self.temporal_encoder = TemporalSelfAttention(self.hidden_dim, nhead=args.gar_nheads, dropout=args.drop_rate)
+        
+        self.use_tcn = args.use_tcn
+        if self.use_tcn:
+            self.tcn = nn.Sequential(
+                nn.Conv1d(self.hidden_dim, self.hidden_dim, kernel_size=3, padding=1, bias=False),
+                nn.BatchNorm1d(self.hidden_dim),
+                nn.ReLU(inplace=True),
+                nn.Dropout(args.drop_rate)
+            )
+
+        self.temporal_encoder = TemporalSelfAttention(self.hidden_dim, nhead=args.gar_nheads, dropout=args.drop_rate, num_layers=args.temporal_layers)
         self.time_pos_emb = nn.Embedding(self.num_frame, self.hidden_dim)
 
         self.num_group_tokens = args.num_group_tokens
@@ -149,6 +159,12 @@ class GADTR(nn.Module):
 
         # temporal encoder across frames per actor
         temporal_in = actor_graph_out.permute(0, 2, 1, 3).reshape(bs * n, t, self.hidden_dim)  # [b*n, t, c]
+        
+        if self.use_tcn:
+            tcn_in = temporal_in.permute(0, 2, 1)
+            tcn_out = self.tcn(tcn_in)
+            temporal_in = temporal_in + tcn_out.permute(0, 2, 1)
+
         time_pos = self.time_pos_emb.weight[:t].unsqueeze(0)                                   # [1, t, c]
         temporal_out, _ = self.temporal_encoder(temporal_in, pos=time_pos)
 

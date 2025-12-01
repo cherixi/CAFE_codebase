@@ -55,6 +55,10 @@ parser.add_argument('--aux_loss', action='store_true')
 parser.add_argument('--group_threshold', default=0.5, type=float, help='post processing threshold')
 parser.add_argument('--distance_threshold', default=0.2, type=float, help='distance mask threshold')
 
+# Temporal Modeling
+parser.add_argument('--use_tcn', action='store_true', help='use TCN before temporal self-attention')
+parser.add_argument('--temporal_layers', default=1, type=int, help='number of temporal self-attention layers')
+
 # Loss option
 parser.add_argument('--temperature', default=0.2, type=float, help='consistency loss temperature')
 

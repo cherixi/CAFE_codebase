@@ -48,9 +48,9 @@ class FrameHOIGraph(nn.Module):
         return x, attn
 
 
-class TemporalSelfAttention(nn.Module):
+class TemporalSelfAttentionLayer(nn.Module):
     """
-    Temporal self-attention over per-actor sequences (length T).
+    Single layer of Temporal self-attention.
     """
 
     def __init__(self, d_model=256, nhead=4, dropout=0.1):
@@ -83,4 +83,23 @@ class TemporalSelfAttention(nn.Module):
         ff = self.ffn(x)
         x = self.norm2(x + self.dropout(ff))
 
+        return x, attn
+
+
+class TemporalSelfAttention(nn.Module):
+    """
+    Stack of TemporalSelfAttentionLayers.
+    """
+
+    def __init__(self, d_model=256, nhead=4, dropout=0.1, num_layers=1):
+        super().__init__()
+        self.layers = nn.ModuleList([
+            TemporalSelfAttentionLayer(d_model, nhead, dropout)
+            for _ in range(num_layers)
+        ])
+
+    def forward(self, x, pos=None, key_padding_mask=None):
+        attn = None
+        for layer in self.layers:
+            x, attn = layer(x, pos, key_padding_mask)
         return x, attn
