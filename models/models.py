@@ -7,7 +7,7 @@ from torchvision.ops import RoIAlign
 from .backbone import build_backbone
 from .group_transformer import build_group_transformer
 from .feed_forward import MLP
-from .hoi_graph import FrameHOIGraph, TemporalSelfAttention
+from .hoi_graph import FrameHOIGraph, TemporalEncoder
 from .videomae_adapter import VideoMAEAdapter
 
 
@@ -46,7 +46,11 @@ class GADTR(nn.Module):
 
         # HOI mapping + temporal modeling
         self.frame_graph = FrameHOIGraph(self.hidden_dim, dropout=args.drop_rate)
-        self.temporal_encoder = TemporalSelfAttention(self.hidden_dim, nhead=args.gar_nheads, dropout=args.drop_rate)
+        self.temporal_encoder = TemporalEncoder(self.hidden_dim, nhead=args.gar_nheads, 
+                                                num_layers=args.temporal_layers,
+                                                tcn_kernel_size=args.tcn_kernel_size,
+                                                tcn_dropout=args.tcn_dropout,
+                                                dropout=args.drop_rate)
         self.time_pos_emb = nn.Embedding(self.num_frame, self.hidden_dim)
         self.actor_time_pool = nn.Linear(self.hidden_dim, 1)
         self.group_time_pool = nn.Linear(self.hidden_dim, 1)
@@ -141,6 +145,11 @@ class GADTR(nn.Module):
         box_pos_emb = torch.reshape(box_pos_emb, (bs, t, n, -1))                        # [b, t, n, c]
         actor_features = actor_features + box_pos_emb
 
+        # frame-level HOI mapping on actor tokens
+        actor_graph_in = actor_features.reshape(bs * t, n, self.hidden_dim)
+        actor_graph_out, _ = self.frame_graph(actor_graph_in, attn_mask=actor_mask)
+        actor_features = actor_graph_out.reshape(bs, t, n, self.hidden_dim)
+
         # group transformer
         hs, actor_att, feature_att = self.group_transformer(src, actor_mask, group_dummy_mask,
                                                             self.group_query_emb.weight, pos, actor_features)
@@ -170,13 +179,8 @@ class GADTR(nn.Module):
             actor_hs = actor_hs_flat.reshape(bs, t, n, -1)
             group_hs = group_hs_flat.reshape(bs, t, self.num_group_tokens, -1)
 
-        # frame-level HOI mapping on actor tokens
-        actor_graph_in = actor_hs.reshape(bs * t, n, self.hidden_dim)
-        actor_graph_out, _ = self.frame_graph(actor_graph_in, attn_mask=actor_mask)
-        actor_graph_out = actor_graph_out.reshape(bs, t, n, self.hidden_dim)
-
         # temporal modeling for actors
-        temporal_actor_in = actor_graph_out.permute(0, 2, 1, 3).reshape(bs * n, t, self.hidden_dim)  # [b*n, t, c]
+        temporal_actor_in = actor_hs.permute(0, 2, 1, 3).reshape(bs * n, t, self.hidden_dim)  # [b*n, t, c]
         time_pos = self.time_pos_emb.weight[:t].unsqueeze(0)                                         # [1, t, c]
         temporal_actor_out, _ = self.temporal_encoder(temporal_actor_in, pos=time_pos)
 

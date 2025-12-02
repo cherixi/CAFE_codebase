@@ -82,3 +82,40 @@ class TemporalSelfAttention(nn.Module):
         x = self.norm2(x + self.dropout(ff))
 
         return x, attn
+
+
+class TemporalEncoder(nn.Module):
+    """
+    Temporal encoder with TCN and stacked self-attention layers.
+    """
+
+    def __init__(self, d_model=256, nhead=4, num_layers=3, tcn_kernel_size=3, tcn_dropout=0.1, dropout=0.1):
+        super().__init__()
+        
+        # TCN block
+        self.tcn = nn.Sequential(
+            nn.Conv1d(d_model, d_model, kernel_size=tcn_kernel_size, padding=tcn_kernel_size//2),
+            nn.BatchNorm1d(d_model),
+            nn.ReLU(inplace=True),
+            nn.Dropout(tcn_dropout)
+        )
+
+        self.layers = nn.ModuleList([
+            TemporalSelfAttention(d_model, nhead, dropout) for _ in range(num_layers)
+        ])
+
+    def forward(self, x, pos=None, key_padding_mask=None):
+        """
+        x: [B*N, T, D]
+        """
+        # Apply TCN
+        # x is [Batch, Time, Dim], Conv1d needs [Batch, Dim, Time]
+        x_t = x.permute(0, 2, 1)
+        x_t = self.tcn(x_t)
+        x = x + x_t.permute(0, 2, 1)  # Add residual connection from TCN
+
+        attn = None
+        for layer in self.layers:
+            x, attn = layer(x, pos, key_padding_mask)
+
+        return x, attn
