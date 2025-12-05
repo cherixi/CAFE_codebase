@@ -33,7 +33,9 @@ parser.add_argument('--image_height', default=720, type=int, help='Image height 
 parser.add_argument('--random_sampling', action='store_true', help='random sampling strategy')
 parser.add_argument('--num_frame', default=5, type=int, help='number of frames for each clip')
 parser.add_argument('--num_class', default=6, type=int, help='number of activity classes')
-parser.add_argument('--videomae_feats_path', default='./videomae_features', type=str, help='path to videomae features')
+parser.add_argument('--no_mae', action='store_true', help='disable VideoMAE enhancement')
+parser.add_argument('--mae_version', default='v2', type=str, choices=['v1', 'v2'], help='VideoMAE version: v1 (768) or v2 (1408)')
+parser.add_argument('--videomae_feats_path', default='./videomae_features_giant', type=str, help='path to videomae features')
 
 # Backbone parameters
 parser.add_argument('--backbone', default='resnet18', type=str, help='feature extraction backbone')
@@ -133,15 +135,25 @@ def main():
     if not os.path.exists(save_path):
         os.makedirs(save_path)
 
-    if args.videomae_feats_path:
+    # Logic for use_mae
+    args.use_mae = not args.no_mae
+
+    if args.use_mae:
         print_log(save_path, f"----------------------------------------------------------------")
         print_log(save_path, f"VideoMAE Enhancement: ENABLED")
+        print_log(save_path, f"Version: {args.mae_version.upper()} (Dim: {1408 if args.mae_version == 'v2' else 768})")
         print_log(save_path, f"Feature Path: {args.videomae_feats_path}")
         print_log(save_path, f"----------------------------------------------------------------")
     else:
         print_log(save_path, f"----------------------------------------------------------------")
         print_log(save_path, f"VideoMAE Enhancement: DISABLED")
         print_log(save_path, f"----------------------------------------------------------------")
+
+    # Set MAE dimension
+    if args.use_mae:
+        args.mae_dim = 1408 if args.mae_version == 'v2' else 768
+    else:
+        args.mae_dim = 0
 
     # set random seed
     random.seed(args.random_seed)
@@ -273,7 +285,9 @@ def train(train_loader, model, criterion, optimizer, epoch):
         boxes = torch.stack([t['boxes'] for t in targets])
         dummy_mask = torch.stack([t['actions'] == args.num_class + 1 for t in targets]).squeeze()
         
-        mae_feats = torch.stack([t['mae_feats'] for t in targets]) if 'mae_feats' in targets[0] else None
+        mae_feats = None
+        if args.use_mae and 'mae_feats' in targets[0]:
+             mae_feats = torch.stack([t['mae_feats'] for t in targets])
 
         num_batch = images.shape[0]
         num_frame = images.shape[1]
@@ -337,7 +351,9 @@ def validate(test_loader, model, criterion, metrics, epoch):
         boxes = torch.stack([t['boxes'] for t in targets])
         dummy_mask = torch.stack([t['actions'] == args.num_class + 1 for t in targets]).squeeze()
         
-        mae_feats = torch.stack([t['mae_feats'] for t in targets]) if 'mae_feats' in targets[0] else None
+        mae_feats = None
+        if args.use_mae and 'mae_feats' in targets[0]:
+             mae_feats = torch.stack([t['mae_feats'] for t in targets])
 
         # compute output
         outputs = model(images, boxes, dummy_mask, mae_feats)
