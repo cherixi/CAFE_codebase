@@ -168,9 +168,9 @@ class GADTR(nn.Module):
         group_hs = group_hs.reshape(bs, t, self.num_group_tokens, -1)
 
         if mae_feats is not None and self.videomae_adapter is not None:
-            if not getattr(self, 'has_printed_videomae_status', False):
-                print("VideoMAE features detected in forward pass. Applying enhancement...")
-                self.has_printed_videomae_status = True
+            # if not getattr(self, 'has_printed_videomae_status', False):
+            #     print("VideoMAE features detected in forward pass. Applying enhancement...")
+            #     self.has_printed_videomae_status = True
 
             if mae_feats.dim() == 3:
                 mae_feats = mae_feats.squeeze(1)
