@@ -155,6 +155,8 @@ class CafeDataset(data.Dataset):
         self.num_class = args.num_class
         self.is_training = is_training
         self.videomae_feats_path = getattr(args, 'videomae_feats_path', None)
+        self.use_mae = getattr(args, 'use_mae', False)
+        self.mae_dim = getattr(args, 'mae_dim', 768)
         self.transform = transforms.Compose([
             transforms.Resize((args.image_height, args.image_width)),
             transforms.ToTensor(),
@@ -283,7 +285,7 @@ class CafeDataset(data.Dataset):
         targets['members'] = members
         targets['membership'] = membership
 
-        if self.videomae_feats_path:
+        if self.use_mae and self.videomae_feats_path:
             feat_path = os.path.join(self.videomae_feats_path, f'{vid}_{cid}.npy')
             if os.path.exists(feat_path):
                 mae_feats = np.load(feat_path)
@@ -291,7 +293,7 @@ class CafeDataset(data.Dataset):
                     mae_feats = mae_feats.squeeze(0)
                 targets['mae_feats'] = torch.from_numpy(mae_feats).float()
             else:
-                targets['mae_feats'] = torch.zeros(768).float()
+                targets['mae_feats'] = torch.zeros(self.mae_dim).float()
 
         infos = {'vid': vid, 'sid': cid, 'fid': fids, 'key_frame': self.anns[frame]['key_frame']}
 
