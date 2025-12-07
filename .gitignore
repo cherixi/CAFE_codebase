@@ -14,3 +14,9 @@ videomae_features/
 
 # 忽略outputs文件夹
 outputs/
+
+# 忽略auto_gpu_runner.py文件
+auto_gpu_runner.py
+
+# 忽略videomae_features_giant文件夹
+videomae_features_giant/
