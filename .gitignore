@@ -17,3 +17,5 @@ outputs/
 
 # 忽略auto_gpu_runner.py文件
 auto_gpu_runner.py
+#忽略video_features_giant文件夹
+videomae_features_giant/
