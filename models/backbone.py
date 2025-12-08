@@ -64,9 +64,10 @@ class Backbone(nn.Module):
                 pretrained=True)
 
         self.num_frames = args.num_frame
-        self.num_channels = 512 if args.backbone in ('resnet18', 'resnet34') else 2048
+        self.num_channels = 256 if args.backbone in ('resnet18', 'resnet34') else 1024
 
-        self.body = IntermediateLayerGetter(backbone, return_layers={'layer4': "0"})
+        # use higher-resolution feature map (stride ~16) from layer3
+        self.body = IntermediateLayerGetter(backbone, return_layers={'layer3': "0"})
 
     def forward(self, x):
         x = self.body(x)["0"]
