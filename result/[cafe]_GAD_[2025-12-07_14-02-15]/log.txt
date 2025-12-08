@@ -1,0 +1,307 @@
+----------------------------------------------------------------
+VideoMAE Enhancement: ENABLED
+Version: V2 (Dim: 1408)
+Feature Path: ./videomae_features_giant
+----------------------------------------------------------------
+--------------------Number of parameters--------------------
+Number of full model parameters: 26220370
+----- Train at epoch #1
+Loss: 2.4703
+Group class error: 88.43
+----- Test at epoch #1
+Loss: 2.5049
+Group class error: 88.73
+group mAP at 1.0: 0.00
+group mAP at 0.5: 0.42
+outlier mIoU: 48.52
+Updated summary and curves at epoch 1
+----- Train at epoch #2
+Loss: 1.2828
+Group class error: 42.92
+----- Test at epoch #2
+Loss: 2.2087
+Group class error: 69.87
+group mAP at 1.0: 1.21
+group mAP at 0.5: 10.93
+outlier mIoU: 56.37
+Updated summary and curves at epoch 2
+----- Train at epoch #3
+Loss: 0.9277
+Group class error: 23.72
+----- Test at epoch #3
+Loss: 2.2832
+Group class error: 54.02
+group mAP at 1.0: 4.74
+group mAP at 0.5: 20.65
+outlier mIoU: 60.82
+Updated summary and curves at epoch 3
+----- Train at epoch #4
+Loss: 0.8021
+Group class error: 17.85
+----- Test at epoch #4
+Loss: 2.3080
+Group class error: 55.31
+group mAP at 1.0: 7.16
+group mAP at 0.5: 22.47
+outlier mIoU: 61.15
+Updated summary and curves at epoch 4
+----- Train at epoch #5
+Loss: 0.7363
+Group class error: 15.25
+----- Test at epoch #5
+Loss: 1.9623
+Group class error: 44.55
+group mAP at 1.0: 8.14
+group mAP at 0.5: 26.41
+outlier mIoU: 62.27
+Updated summary and curves at epoch 5
+----- Train at epoch #6
+Loss: 0.6573
+Group class error: 13.28
+----- Test at epoch #6
+Loss: 2.4538
+Group class error: 51.09
+group mAP at 1.0: 6.09
+group mAP at 0.5: 20.14
+outlier mIoU: 59.22
+Updated summary and curves at epoch 6
+----- Train at epoch #7
+Loss: 0.5906
+Group class error: 10.79
+----- Test at epoch #7
+Loss: 2.2337
+Group class error: 51.93
+group mAP at 1.0: 6.31
+group mAP at 0.5: 25.65
+outlier mIoU: 59.30
+Updated summary and curves at epoch 7
+----- Train at epoch #8
+Loss: 0.5470
+Group class error: 9.76
+----- Test at epoch #8
+Loss: 2.4078
+Group class error: 49.39
+group mAP at 1.0: 6.72
+group mAP at 0.5: 22.05
+outlier mIoU: 57.65
+Updated summary and curves at epoch 8
+----- Train at epoch #9
+Loss: 0.5055
+Group class error: 8.62
+----- Test at epoch #9
+Loss: 2.3065
+Group class error: 41.18
+group mAP at 1.0: 6.49
+group mAP at 0.5: 26.17
+outlier mIoU: 51.57
+Updated summary and curves at epoch 9
+----- Train at epoch #10
+Loss: 0.4718
+Group class error: 7.73
+----- Test at epoch #10
+Loss: 2.2488
+Group class error: 42.63
+group mAP at 1.0: 10.97
+group mAP at 0.5: 31.65
+outlier mIoU: 60.85
+Updated summary and curves at epoch 10
+----- Train at epoch #11
+Loss: 0.4252
+Group class error: 6.56
+----- Test at epoch #11
+Loss: 2.5480
+Group class error: 57.57
+group mAP at 1.0: 7.27
+group mAP at 0.5: 21.72
+outlier mIoU: 58.58
+Updated summary and curves at epoch 11
+----- Train at epoch #12
+Loss: 0.4203
+Group class error: 6.50
+----- Test at epoch #12
+Loss: 2.6494
+Group class error: 45.79
+group mAP at 1.0: 7.00
+group mAP at 0.5: 24.98
+outlier mIoU: 60.34
+Updated summary and curves at epoch 12
+----- Train at epoch #13
+Loss: 0.4067
+Group class error: 6.21
+----- Test at epoch #13
+Loss: 2.6131
+Group class error: 38.08
+group mAP at 1.0: 7.85
+group mAP at 0.5: 30.76
+outlier mIoU: 56.12
+Updated summary and curves at epoch 13
+----- Train at epoch #14
+Loss: 0.3765
+Group class error: 4.94
+----- Test at epoch #14
+Loss: 2.5512
+Group class error: 38.36
+group mAP at 1.0: 7.49
+group mAP at 0.5: 28.26
+outlier mIoU: 56.13
+Updated summary and curves at epoch 14
+----- Train at epoch #15
+Loss: 0.3539
+Group class error: 4.37
+----- Test at epoch #15
+Loss: 2.4796
+Group class error: 48.36
+group mAP at 1.0: 10.59
+group mAP at 0.5: 29.08
+outlier mIoU: 63.38
+Updated summary and curves at epoch 15
+----- Train at epoch #16
+Loss: 0.3348
+Group class error: 4.02
+----- Test at epoch #16
+Loss: 2.9696
+Group class error: 52.35
+group mAP at 1.0: 7.56
+group mAP at 0.5: 25.61
+outlier mIoU: 61.37
+Updated summary and curves at epoch 16
+----- Train at epoch #17
+Loss: 0.3096
+Group class error: 3.49
+----- Test at epoch #17
+Loss: 2.6578
+Group class error: 44.45
+group mAP at 1.0: 11.06
+group mAP at 0.5: 31.40
+outlier mIoU: 65.79
+Updated summary and curves at epoch 17
+----- Train at epoch #18
+Loss: 0.3124
+Group class error: 3.17
+----- Test at epoch #18
+Loss: 2.5642
+Group class error: 50.83
+group mAP at 1.0: 7.51
+group mAP at 0.5: 23.51
+outlier mIoU: 60.97
+Updated summary and curves at epoch 18
+----- Train at epoch #19
+Loss: 0.3059
+Group class error: 3.41
+----- Test at epoch #19
+Loss: 2.9064
+Group class error: 47.68
+group mAP at 1.0: 9.07
+group mAP at 0.5: 25.98
+outlier mIoU: 62.54
+Updated summary and curves at epoch 19
+----- Train at epoch #20
+Loss: 0.2722
+Group class error: 2.18
+----- Test at epoch #20
+Loss: 2.5050
+Group class error: 40.49
+group mAP at 1.0: 11.40
+group mAP at 0.5: 31.46
+outlier mIoU: 64.90
+Updated summary and curves at epoch 20
+----- Train at epoch #21
+Loss: 0.2630
+Group class error: 1.94
+----- Test at epoch #21
+Loss: 2.8434
+Group class error: 47.17
+group mAP at 1.0: 10.88
+group mAP at 0.5: 28.84
+outlier mIoU: 63.66
+Updated summary and curves at epoch 21
+----- Train at epoch #22
+Loss: 0.2473
+Group class error: 1.35
+----- Test at epoch #22
+Loss: 3.3003
+Group class error: 39.10
+group mAP at 1.0: 10.08
+group mAP at 0.5: 29.43
+outlier mIoU: 59.17
+Updated summary and curves at epoch 22
+----- Train at epoch #23
+Loss: 0.2429
+Group class error: 1.48
+----- Test at epoch #23
+Loss: 2.8290
+Group class error: 39.72
+group mAP at 1.0: 13.07
+group mAP at 0.5: 33.32
+outlier mIoU: 65.29
+Updated summary and curves at epoch 23
+----- Train at epoch #24
+Loss: 0.2339
+Group class error: 1.09
+----- Test at epoch #24
+Loss: 2.9897
+Group class error: 40.74
+group mAP at 1.0: 10.38
+group mAP at 0.5: 31.79
+outlier mIoU: 64.87
+Updated summary and curves at epoch 24
+----- Train at epoch #25
+Loss: 0.2326
+Group class error: 0.98
+----- Test at epoch #25
+Loss: 3.1524
+Group class error: 48.20
+group mAP at 1.0: 7.95
+group mAP at 0.5: 27.25
+outlier mIoU: 62.76
+Updated summary and curves at epoch 25
+----- Train at epoch #26
+Loss: 0.2262
+Group class error: 1.00
+----- Test at epoch #26
+Loss: 2.9476
+Group class error: 37.16
+group mAP at 1.0: 12.03
+group mAP at 0.5: 33.21
+outlier mIoU: 65.95
+Updated summary and curves at epoch 26
+----- Train at epoch #27
+Loss: 0.2202
+Group class error: 0.94
+----- Test at epoch #27
+Loss: 3.0517
+Group class error: 45.21
+group mAP at 1.0: 10.77
+group mAP at 0.5: 30.68
+outlier mIoU: 63.73
+Updated summary and curves at epoch 27
+----- Train at epoch #28
+Loss: 0.2113
+Group class error: 0.70
+----- Test at epoch #28
+Loss: 3.2422
+Group class error: 43.73
+group mAP at 1.0: 9.04
+group mAP at 0.5: 29.85
+outlier mIoU: 64.25
+Updated summary and curves at epoch 28
+----- Train at epoch #29
+Loss: 0.2076
+Group class error: 0.51
+----- Test at epoch #29
+Loss: 3.1401
+Group class error: 43.95
+group mAP at 1.0: 9.38
+group mAP at 0.5: 29.90
+outlier mIoU: 63.90
+Updated summary and curves at epoch 29
+----- Train at epoch #30
+Loss: 0.2049
+Group class error: 0.59
+----- Test at epoch #30
+Loss: 3.0667
+Group class error: 40.96
+group mAP at 1.0: 9.85
+group mAP at 0.5: 32.21
+outlier mIoU: 65.98
+Updated summary and curves at epoch 30
