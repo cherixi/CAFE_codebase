@@ -45,7 +45,8 @@ class GADTR(nn.Module):
         self.group_emb = nn.Linear(self.hidden_dim, self.num_class + 1)
 
         # HOI mapping + temporal modeling
-        self.frame_graph = FrameHOIGraph(self.hidden_dim, dropout=args.drop_rate)
+        hoi_nheads = getattr(args, 'hoi_nheads', 4)
+        self.frame_graph = FrameHOIGraph(self.hidden_dim, nhead=hoi_nheads, dropout=args.drop_rate)
         self.temporal_encoder = TemporalEncoder(self.hidden_dim, nhead=args.gar_nheads, 
                                                 num_layers=args.temporal_layers,
                                                 tcn_kernel_size=args.tcn_kernel_size,
@@ -99,8 +100,9 @@ class GADTR(nn.Module):
         bs, t, _, h, w = x.shape
         n = boxes.shape[2]
 
-        boxes = torch.reshape(boxes, (-1, 4))                                           # [b x t x n, 4]
-        boxes_flat = boxes.clone().detach()
+        # keep normalized boxes for geometry; flatten copy for ROI Align
+        boxes_norm = boxes.reshape(bs, t, n, 4)
+        boxes_flat = boxes_norm.reshape(-1, 4)                                          # [b x t x n, 4]
         boxes_idx = [i * torch.ones(n, dtype=torch.int) for i in range(bs * t)]
         boxes_idx = torch.stack(boxes_idx).to(device=boxes.device)
         boxes_idx_flat = torch.reshape(boxes_idx, (bs * t * n, ))                       # [b x t x n]
@@ -111,33 +113,24 @@ class GADTR(nn.Module):
         src = self.input_proj(features)
         src = torch.reshape(src, (bs, t, -1, oh, ow))                                   # [b, t, c, oh, ow]
 
-        # calculate distance & distance mask
-        boxes_center = boxes.clone().detach()
-        boxes_center = torch.reshape(boxes_center[:, :2], (-1, n, 2))
-        boxes_distance = self.calculate_pairwise_distnace(boxes_center)
-
-        distance_mask = (boxes_distance > self.distance_threshold)
-
         # ignore dummy boxes (padded boxes to match the number of actors)
-        dummy_mask = dummy_mask.unsqueeze(1).repeat(1, t, 1).reshape(-1, n)
-        actor_dummy_mask = (~dummy_mask.unsqueeze(2)).float() @ (~dummy_mask.unsqueeze(1)).float()
-        dummy_diag = (dummy_mask.unsqueeze(2).float() @ dummy_mask.unsqueeze(1).float()).nonzero(as_tuple=True)
-        actor_mask = ~(actor_dummy_mask.bool())
-        actor_mask[dummy_diag] = False
-        actor_mask = (distance_mask | actor_mask)
+        dummy_mask = dummy_mask.unsqueeze(1).repeat(1, t, 1).reshape(-1, n).bool()
+        valid_pairs = (~dummy_mask).unsqueeze(2) & (~dummy_mask).unsqueeze(1)
+        actor_mask = ~valid_pairs  # True where either query/key is dummy
         group_dummy_mask = dummy_mask
 
-        boxes_flat[:, 0] = (boxes[:, 0] - boxes[:, 2] / 2) * ow
-        boxes_flat[:, 1] = (boxes[:, 1] - boxes[:, 3] / 2) * oh
-        boxes_flat[:, 2] = (boxes[:, 0] + boxes[:, 2] / 2) * ow
-        boxes_flat[:, 3] = (boxes[:, 1] + boxes[:, 3] / 2) * oh
+        boxes_flat_pixel = boxes_flat.clone()
+        boxes_flat_pixel[:, 0] = (boxes_flat[:, 0] - boxes_flat[:, 2] / 2) * ow
+        boxes_flat_pixel[:, 1] = (boxes_flat[:, 1] - boxes_flat[:, 3] / 2) * oh
+        boxes_flat_pixel[:, 2] = (boxes_flat[:, 0] + boxes_flat[:, 2] / 2) * ow
+        boxes_flat_pixel[:, 3] = (boxes_flat[:, 1] + boxes_flat[:, 3] / 2) * oh
 
-        boxes_flat.requires_grad = False
+        boxes_flat_pixel.requires_grad = False
         boxes_idx_flat.requires_grad = False
 
         # extract actor features
         # torchvision RoIAlign expects List[Tensor[N, 4]], so we split by batch
-        boxes_list = [boxes_flat[boxes_idx_flat == i] for i in range(bs * t)]
+        boxes_list = [boxes_flat_pixel[boxes_idx_flat == i] for i in range(bs * t)]
         actor_features = self.roi_align(features, boxes_list)
         actor_features = torch.reshape(actor_features, (bs * t * n, -1))
         actor_features = self.fc_emb(actor_features)
@@ -152,7 +145,8 @@ class GADTR(nn.Module):
 
         # frame-level HOI mapping on actor tokens
         actor_graph_in = actor_features.reshape(bs * t, n, self.hidden_dim)
-        actor_graph_out, _ = self.frame_graph(actor_graph_in, attn_mask=actor_mask)
+        boxes_for_graph = boxes_norm.reshape(bs * t, n, 4)
+        actor_graph_out, _ = self.frame_graph(actor_graph_in, boxes_for_graph, attn_mask=actor_mask)
         actor_features = actor_graph_out.reshape(bs, t, n, self.hidden_dim)
 
         # group transformer
