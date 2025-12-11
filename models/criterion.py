@@ -72,11 +72,11 @@ class SetCriterion(nn.Module):
             loss_ce += F.cross_entropy(src_logit.transpose(1, 2), target_class, self.empty_weight)
 
             if src_logits_log is None:
-                src_logits_log = src_logit
-                tgt_classes_log = target_class
+                src_logits_log = src_logit.squeeze(0)
+                tgt_classes_log = target_class.squeeze(0)
             else:
-                src_logits_log = torch.cat([src_logits_log.squeeze(), src_logit.squeeze()], dim=0)
-                tgt_classes_log = torch.cat([tgt_classes_log.squeeze(), target_class.squeeze()], dim=0)
+                src_logits_log = torch.cat([src_logits_log, src_logit.squeeze(0)], dim=0)
+                tgt_classes_log = torch.cat([tgt_classes_log, target_class.squeeze(0)], dim=0)
 
         loss_ce /= src_logits.shape[0]
         losses = {'loss_ce': loss_ce}
@@ -188,10 +188,9 @@ class SetCriterion(nn.Module):
                 group_id = non_dummy_membership[actor_idx]
 
                 if group_id != -1:
-                    positive_idx = (non_dummy_membership == group_id).nonzero(as_tuple=True)
-                    positive_idx = list(positive_idx[0])
-                    positive_idx.remove(actor_idx)
-                    positive_idx = [tuple(positive_idx)]
+                    # Use tensor operations to avoid deprecated indexing warning
+                    pos_indices = (non_dummy_membership == group_id).nonzero(as_tuple=True)[0]
+                    positive_idx = pos_indices[pos_indices != actor_idx]
                     positive_samples = sim[actor_idx][positive_idx]
 
                     negative_idx = (non_dummy_membership != group_id).nonzero(as_tuple=True)

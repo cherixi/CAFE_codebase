@@ -117,7 +117,16 @@ class GADTR(nn.Module):
         dummy_mask = dummy_mask.unsqueeze(1).repeat(1, t, 1).reshape(-1, n).bool()
         valid_pairs = (~dummy_mask).unsqueeze(2) & (~dummy_mask).unsqueeze(1)
         actor_mask = ~valid_pairs  # True where either query/key is dummy
-        group_dummy_mask = dummy_mask
+
+        # Unmask diagonal to prevent NaNs in attention (especially for dummy actors)
+        diag_idx = torch.arange(n, device=actor_mask.device)
+        actor_mask[:, diag_idx, diag_idx] = False
+
+        group_dummy_mask = dummy_mask.clone()
+        # Ensure at least one key is not masked for cross-attention
+        all_masked = group_dummy_mask.all(dim=-1)
+        if all_masked.any():
+            group_dummy_mask[all_masked, 0] = False
 
         boxes_flat_pixel = boxes_flat.clone()
         boxes_flat_pixel[:, 0] = (boxes_flat[:, 0] - boxes_flat[:, 2] / 2) * ow

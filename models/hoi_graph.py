@@ -95,6 +95,11 @@ class FrameHOIGraph(nn.Module):
             scores = scores.masked_fill(new_mask, float("-inf"))
 
         attn = torch.softmax(scores, dim=-1)
+        
+        # Handle NaN if all keys are masked (e.g. for dummy actors)
+        if torch.isnan(attn).any():
+            attn = torch.nan_to_num(attn, nan=0.0)
+
         attn = self.dropout(attn)
 
         out = torch.einsum("bhqk,bkhd->bqhd", attn, v)  # [B*T, n, h, dk]
