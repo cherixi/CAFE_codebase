@@ -57,6 +57,10 @@ parser.add_argument('--aux_loss', action='store_true')
 parser.add_argument('--group_threshold', default=0.5, type=float, help='post processing threshold')
 parser.add_argument('--distance_threshold', default=0.2, type=float, help='distance mask threshold')
 
+# HOI Graph
+parser.add_argument('--hoi_nheads', default=4, type=int, help='number of heads for HOI graph')
+parser.add_argument('--hoi_topk', default=0, type=int, help='topk for HOI graph sparsity (0 for full)')
+
 # Temporal Modeling
 parser.add_argument('--temporal_layers', default=3, type=int, help='number of temporal attention layers')
 parser.add_argument('--tcn_kernel_size', default=3, type=int, help='kernel size for TCN')

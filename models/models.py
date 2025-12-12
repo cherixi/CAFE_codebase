@@ -46,7 +46,8 @@ class GADTR(nn.Module):
 
         # HOI mapping + temporal modeling
         hoi_nheads = getattr(args, 'hoi_nheads', 4)
-        self.frame_graph = FrameHOIGraph(self.hidden_dim, nhead=hoi_nheads, dropout=args.drop_rate)
+        hoi_topk = getattr(args, 'hoi_topk', 0)
+        self.frame_graph = FrameHOIGraph(self.hidden_dim, nhead=hoi_nheads, dropout=args.drop_rate, topk=hoi_topk)
         self.temporal_encoder = TemporalEncoder(self.hidden_dim, nhead=args.gar_nheads, 
                                                 num_layers=args.temporal_layers,
                                                 tcn_kernel_size=args.tcn_kernel_size,
