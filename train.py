@@ -68,6 +68,9 @@ parser.add_argument('--tcn_dropout', default=0.1, type=float, help='dropout for 
 
 # Loss option
 parser.add_argument('--temperature', default=0.2, type=float, help='consistency loss temperature')
+parser.add_argument('--label_smoothing', default=0.1, type=float, help='label smoothing factor for group activity classification')
+parser.add_argument('--focal_alpha', default=0.25, type=float, help='alpha for focal loss')
+parser.add_argument('--focal_gamma', default=2.0, type=float, help='gamma for focal loss')
 
 # Loss coefficients (Individual)
 parser.add_argument('--ce_loss_coef', default=1, type=float)

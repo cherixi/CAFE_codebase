@@ -49,6 +49,9 @@ class SetCriterion(nn.Module):
 
         # option
         self.temperature = args.temperature
+        self.label_smoothing = args.label_smoothing
+        self.focal_alpha = args.focal_alpha
+        self.focal_gamma = args.focal_gamma
 
     #######################################################################################################################
     # * Individual Losses
@@ -114,7 +117,7 @@ class SetCriterion(nn.Module):
                                     device=src_logits.device)
         target_classes[idx] = target_classes_o
 
-        loss_ce = F.cross_entropy(src_logits.transpose(1, 2), target_classes, self.empty_group_weight)
+        loss_ce = F.cross_entropy(src_logits.transpose(1, 2), target_classes, self.empty_group_weight, label_smoothing=self.label_smoothing)
         losses = {'loss_group_ce': loss_ce}
 
         if log:
