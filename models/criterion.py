@@ -138,7 +138,7 @@ class SetCriterion(nn.Module):
         return losses
 
     def loss_group_code(self, outputs, targets, group_indices, log=True):
-        """Membership loss"""
+        """Membership loss with Focal Loss"""
         sim = outputs['membership']
 
         idx = self._get_src_permutation_idx(group_indices)
@@ -159,7 +159,18 @@ class SetCriterion(nn.Module):
 
             target_members_batch = target_members[batch_idx].transpose(0, 1)[non_dummy_idx].transpose(0, 1).unsqueeze(0)
 
-            loss_membership += F.binary_cross_entropy(sim_batch, target_members_batch)
+            # Focal Loss Implementation
+            # sim_batch is probability (after sigmoid in model), target is 0 or 1
+            # BCE = - [y * log(p) + (1-y) * log(1-p)]
+            # Focal = - [alpha * (1-p)^gamma * y * log(p) + (1-alpha) * p^gamma * (1-y) * log(1-p)]
+            
+            bce_loss = F.binary_cross_entropy(sim_batch, target_members_batch, reduction='none')
+            p_t = sim_batch * target_members_batch + (1 - sim_batch) * (1 - target_members_batch)
+            alpha_t = self.focal_alpha * target_members_batch + (1 - self.focal_alpha) * (1 - target_members_batch)
+            
+            focal_loss = alpha_t * (1 - p_t) ** self.focal_gamma * bce_loss
+            loss_membership += focal_loss.mean()
+
         loss_membership /= sim.shape[0]
 
         losses = {'loss_group_code': loss_membership}
