@@ -181,6 +181,7 @@ class SetCriterion(nn.Module):
         actor_embeds = outputs['actor_embeddings']
 
         consistency_loss = 0.0
+        total_group_count = 0
 
         for batch_idx in range(actor_embeds.shape[0]):
             membership = targets[batch_idx]["membership"][0]
@@ -196,7 +197,8 @@ class SetCriterion(nn.Module):
 
             non_dummy_membership = membership[non_dummy_idx]
 
-            group_count = 0
+            batch_loss = 0.0
+            batch_group_count = 0
 
             for actor_idx in range(N):
                 group_id = non_dummy_membership[actor_idx]
@@ -213,13 +215,19 @@ class SetCriterion(nn.Module):
                     nominator = torch.exp(positive_samples)
                     denominator = torch.exp(torch.cat((positive_samples, negative_samples)))
                     loss_partial = -torch.log(torch.sum(nominator) / torch.sum(denominator))
-                    group_count += 1
+                    
+                    batch_loss += loss_partial
+                    batch_group_count += 1
 
-                    consistency_loss += loss_partial
+            if batch_group_count > 0:
+                consistency_loss += batch_loss
+                total_group_count += batch_group_count
 
-            consistency_loss /= group_count
+        if total_group_count > 0:
+            consistency_loss /= total_group_count
+        else:
+            consistency_loss = torch.tensor(0.0, device=actor_embeds.device)
 
-        consistency_loss /= actor_embeds.shape[0]
         losses = {'loss_consistency': consistency_loss}
         return losses
 
