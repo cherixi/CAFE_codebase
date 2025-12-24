@@ -5,6 +5,7 @@
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torchvision
 from torchvision.models._utils import IntermediateLayerGetter
 
@@ -74,6 +75,70 @@ class Backbone(nn.Module):
         return x
 
 
+class DinoV2Backbone(nn.Module):
+    """
+    DINOv2 Backbone wrapper that outputs 4D feature maps compatible with existing pipeline.
+    """
+    def __init__(self, args):
+        super().__init__()
+        # 确定模型名称
+        model_name = args.backbone if 'dinov2' in args.backbone else 'dinov2_vits14'
+        print(f"[DinoV2Backbone] Loading model: {model_name}")
+        
+        self.backbone = torch.hub.load('facebookresearch/dinov2', model_name)
+        
+        # 根据模型型号自动设置 num_channels
+        if 'vits' in model_name:
+            self.num_channels = 384
+        elif 'vitb' in model_name:
+            self.num_channels = 768
+        elif 'vitl' in model_name:
+            self.num_channels = 1024
+        elif 'vitg' in model_name:
+            self.num_channels = 1536
+        else:
+            raise ValueError(f"Unknown DINOv2 model: {model_name}")
+        
+        print(f"[DinoV2Backbone] num_channels = {self.num_channels}")
+        
+        self.patch_size = 14
+        
+        # 冻结参数（可选）
+        freeze_backbone = getattr(args, 'freeze_backbone', True)
+        if freeze_backbone:
+            print("[DinoV2Backbone] Freezing backbone parameters")
+            for param in self.backbone.parameters():
+                param.requires_grad = False
+
+    def forward(self, x):
+        """
+        Args:
+            x: [B*T, 3, H, W]
+        Returns:
+            feature_map: [B*T, C, H/14, W/14]
+        """
+        b, c, h, w = x.shape
+        p = self.patch_size
+        
+        # 尺寸对齐：确保 H, W 是 patch_size 的倍数
+        if h % p != 0 or w % p != 0:
+            new_h = (h // p) * p
+            new_w = (w // p) * p
+            x = F.interpolate(x, size=(new_h, new_w), mode='bilinear', align_corners=False)
+            h, w = new_h, new_w
+        
+        # DINOv2 前向传播
+        output = self.backbone.forward_features(x)
+        patch_tokens = output['x_norm_patchtokens']  # [B*T, N_patches, D]
+        
+        # Reshape 为 2D 特征图: [B*T, H_grid*W_grid, D] -> [B*T, D, H_grid, W_grid]
+        h_grid = h // p
+        w_grid = w // p
+        feature_map = patch_tokens.reshape(b, h_grid, w_grid, self.num_channels).permute(0, 3, 1, 2)
+        
+        return feature_map
+
+
 class Joiner(nn.Sequential):
     def __init__(self, backbone, position_embedding):
         super().__init__(backbone, position_embedding)
@@ -90,9 +155,15 @@ class Joiner(nn.Sequential):
         return features, pos
 
 
-def build_backbone(args):
+def  build_backbone(args):
     pos_embed = build_position_encoding(args)
-    backbone = Backbone(args)
+    
+    # 根据 backbone 名称选择不同的 Backbone
+    if 'dinov2' in args.backbone:
+        backbone = DinoV2Backbone(args)
+    else:
+        backbone = Backbone(args)
+    
     model = Joiner(backbone, pos_embed)
     model.num_channels = backbone.num_channels
     return model

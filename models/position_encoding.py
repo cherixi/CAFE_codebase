@@ -54,8 +54,9 @@ class PositionEmbeddingLearned(nn.Module):
     """
     def __init__(self, num_pos_feats=256):
         super().__init__()
-        self.row_embed = nn.Embedding(50, num_pos_feats)
-        self.col_embed = nn.Embedding(50, num_pos_feats)
+        # 增大嵌入表大小以支持更大的特征图 (如 DINOv2: 1120/14=80, 630/14=45)
+        self.row_embed = nn.Embedding(100, num_pos_feats)
+        self.col_embed = nn.Embedding(100, num_pos_feats)
         self.reset_parameters()
 
     def reset_parameters(self):

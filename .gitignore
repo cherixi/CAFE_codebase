@@ -20,3 +20,6 @@ auto_gpu_runner.py
 
 # 忽略videomae_features_giant文件夹
 videomae_features_giant/
+
+# 忽略.vscode文件夹
+.vscode/
