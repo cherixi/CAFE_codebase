@@ -93,6 +93,8 @@ parser.add_argument('--groundtruth', default='./evaluation/gt_tracks.txt', type=
 parser.add_argument('--labelmap', default='./label_map/group_action_list.pbtxt', type=argparse.FileType("r"))
 parser.add_argument('--giou_thresh', default=1.0, type=float)
 parser.add_argument('--eval_type', default="gt_base", type=str, help='gt_based or detection_based')
+parser.add_argument('--eval_image_width', default=1280, type=int, help='Image width for evaluation (must match gt_tracks.txt)')
+parser.add_argument('--eval_image_height', default=720, type=int, help='Image height for evaluation (must match gt_tracks.txt)')
 
 args = parser.parse_args()
 path = None
@@ -236,7 +238,8 @@ def validate(test_loader, model, criterion, metrics):
 def make_txt(boxes, infos, outputs, name_to_vid, file_path):
     for b in range(boxes.shape[0]):
         for t in range(boxes.shape[1]):
-            image_w, image_h = args.image_width, args.image_height
+            # 使用评估基准尺寸（与 gt_tracks.txt 一致），而不是模型输入尺寸
+            image_w, image_h = args.eval_image_width, args.eval_image_height
 
             pred_group_actions = outputs['pred_activities'][b]
             pred_group_actions = F.softmax(pred_group_actions, dim=1)
