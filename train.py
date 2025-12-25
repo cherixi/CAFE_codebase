@@ -192,9 +192,16 @@ def main():
     model = torch.nn.DataParallel(model).cuda()
 
     # get the number of model parameters
-    parameters = 'Number of full model parameters: {}'.format(sum([p.data.nelement() for p in model.parameters()]))
+    total_params = sum([p.data.nelement() for p in model.parameters()])
+    trainable_params = sum([p.data.nelement() for p in model.parameters() if p.requires_grad])
+    frozen_params = total_params - trainable_params
+    
     print_log(save_path, '--------------------Number of parameters--------------------')
-    print_log(save_path, parameters)
+    print_log(save_path, f'Total parameters: {total_params:,}')
+    print_log(save_path, f'Trainable parameters: {trainable_params:,}')
+    print_log(save_path, f'Frozen parameters: {frozen_params:,}')
+    if total_params > 0:
+        print_log(save_path, f'Frozen ratio: {frozen_params / total_params * 100:.1f}%')
 
     # define loss function and optimizer
     optimizer = torch.optim.Adam(model.parameters(), args.lr, betas=(0.9, 0.999), eps=1e-8,
