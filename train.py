@@ -41,7 +41,9 @@ parser.add_argument('--videomae_feats_path', default='./videomae_features_giant'
 parser.add_argument('--backbone', default='resnet18', type=str, help='feature extraction backbone (resnet18, resnet50, dinov2_vits14, dinov2_vitb14, dinov2_vitl14, dinov2_vitg14)')
 parser.add_argument('--dilation', action='store_true', help='use dilation or not')
 parser.add_argument('--frozen_batch_norm', action='store_true', help='use frozen batch normalization')
-parser.add_argument('--freeze_backbone', action='store_true', help='freeze backbone parameters (for DINOv2)')
+parser.add_argument('--freeze_backbone', action='store_true', help='freeze ALL backbone parameters (for DINOv2)')
+parser.add_argument('--unfreeze_blocks', default=0, type=int, help='number of last transformer blocks to unfreeze (for DINOv2 partial finetuning, 0=freeze all if freeze_backbone, or finetune all)')
+parser.add_argument('--backbone_lr_scale', default=0.1, type=float, help='backbone learning rate = base_lr * backbone_lr_scale (for layer-wise LR)')
 parser.add_argument('--hidden_dim', default=256, type=int, help='transformer channel dimension')
 
 # RoI Align parameters
@@ -203,12 +205,46 @@ def main():
     if total_params > 0:
         print_log(save_path, f'Frozen ratio: {frozen_params / total_params * 100:.1f}%')
 
-    # define loss function and optimizer
-    optimizer = torch.optim.Adam(model.parameters(), args.lr, betas=(0.9, 0.999), eps=1e-8,
-                                 weight_decay=args.weight_decay)
+    # define loss function and optimizer with layer-wise learning rate
+    # 分层学习率：Backbone 参数使用较小学习率，其他参数使用基础学习率
+    backbone_params = []
+    head_params = []
+    
+    for name, param in model.named_parameters():
+        if not param.requires_grad:
+            continue
+        # DataParallel 包装后，参数名称会有 'module.' 前缀
+        if 'backbone' in name:
+            backbone_params.append(param)
+        else:
+            head_params.append(param)
+    
+    # 计算 Backbone 学习率
+    backbone_lr = args.lr * args.backbone_lr_scale
+    
+    print_log(save_path, '--------------------Learning Rate Configuration--------------------')
+    print_log(save_path, f'Head learning rate: {args.lr}')
+    print_log(save_path, f'Backbone learning rate: {backbone_lr} (scale: {args.backbone_lr_scale})')
+    print_log(save_path, f'Backbone params count: {sum(p.numel() for p in backbone_params):,}')
+    print_log(save_path, f'Head params count: {sum(p.numel() for p in head_params):,}')
+    
+    # 构建参数组
+    param_groups = [
+        {'params': head_params, 'lr': args.lr},
+        {'params': backbone_params, 'lr': backbone_lr}
+    ]
+    
+    optimizer = torch.optim.AdamW(param_groups, betas=(0.9, 0.999), eps=1e-8,
+                                  weight_decay=args.weight_decay)
 
-    scheduler = torch.optim.lr_scheduler.CyclicLR(optimizer, args.lr, args.max_lr, step_size_up=args.lr_step,
-                                                  step_size_down=args.lr_step_down, mode='triangular2',
+    # 注意: CyclicLR 对多参数组的支持有限，这里改用 CosineAnnealingLR 或保持 CyclicLR
+    # CyclicLR 会按比例缩放各参数组的学习率
+    scheduler = torch.optim.lr_scheduler.CyclicLR(optimizer, 
+                                                  base_lr=[args.lr, backbone_lr], 
+                                                  max_lr=[args.max_lr, args.max_lr * args.backbone_lr_scale], 
+                                                  step_size_up=args.lr_step,
+                                                  step_size_down=args.lr_step_down, 
+                                                  mode='triangular2',
                                                   cycle_momentum=False)
 
     if args.load_model:

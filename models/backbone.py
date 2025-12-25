@@ -78,6 +78,7 @@ class Backbone(nn.Module):
 class DinoV2Backbone(nn.Module):
     """
     DINOv2 Backbone wrapper that outputs 4D feature maps compatible with existing pipeline.
+    Supports partial unfreezing of the last N transformer blocks.
     """
     def __init__(self, args):
         super().__init__()
@@ -103,12 +104,37 @@ class DinoV2Backbone(nn.Module):
         
         self.patch_size = 14
         
-        # 冻结参数（可选）
-        freeze_backbone = getattr(args, 'freeze_backbone', True)
+        # 冻结/解冻策略
+        freeze_backbone = getattr(args, 'freeze_backbone', False)
+        unfreeze_blocks = getattr(args, 'unfreeze_blocks', 0)  # 默认解冻 0 层
+        
         if freeze_backbone:
-            print("[DinoV2Backbone] Freezing backbone parameters")
+            # 完全冻结所有参数
+            print("[DinoV2Backbone] Freezing ALL backbone parameters")
             for param in self.backbone.parameters():
                 param.requires_grad = False
+        elif unfreeze_blocks > 0:
+            # 部分解冻：先冻结所有，再解冻最后 N 层 blocks
+            print(f"[DinoV2Backbone] Partial unfreezing: freezing all, then unfreezing last {unfreeze_blocks} blocks")
+            for param in self.backbone.parameters():
+                param.requires_grad = False
+            
+            # 解冻最后 unfreeze_blocks 个 transformer blocks
+            total_blocks = len(self.backbone.blocks)
+            for i, block in enumerate(self.backbone.blocks):
+                if i >= total_blocks - unfreeze_blocks:
+                    for param in block.parameters():
+                        param.requires_grad = True
+                    print(f"  - Unfreezing block {i}")
+            
+            # 解冻最终的 Norm 层
+            if hasattr(self.backbone, 'norm'):
+                for param in self.backbone.norm.parameters():
+                    param.requires_grad = True
+                print("  - Unfreezing final norm layer")
+        else:
+            # 全部解冻（全参数微调）
+            print("[DinoV2Backbone] All backbone parameters are TRAINABLE (full fine-tuning)")
 
     def forward(self, x):
         """
