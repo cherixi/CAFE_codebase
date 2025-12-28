@@ -12,6 +12,7 @@ import time
 import random
 import numpy as np
 import argparse
+import gc
 
 from models import build_model
 from util.utils import *
@@ -185,10 +186,23 @@ def main():
 
     batch_sampler_train = data.BatchSampler(sampler_train, args.batch, drop_last=True)
 
+    # 优化 DataLoader 配置以防止内存问题
+    # - num_workers=2: 降低并发进程数，减少内存压力
+    # - pin_memory=False: 关闭锁页内存，减少系统内存占用
+    # - persistent_workers=True: 保持 worker 存活，避免每个 Epoch 重新 fork 进程
+    # - prefetch_factor=2: 限制预取数量
     train_loader = data.DataLoader(train_set, batch_sampler=batch_sampler_train,
-                                   collate_fn=collate_fn, num_workers=4, pin_memory=True)
+                                   collate_fn=collate_fn, 
+                                   num_workers=2, 
+                                   pin_memory=False,
+                                   persistent_workers=True,
+                                   prefetch_factor=2)
     test_loader = data.DataLoader(test_set, args.test_batch, sampler=sampler_test, drop_last=False,
-                                  collate_fn=collate_fn, num_workers=4, pin_memory=True)
+                                  collate_fn=collate_fn, 
+                                  num_workers=2, 
+                                  pin_memory=False,
+                                  persistent_workers=True,
+                                  prefetch_factor=2)
 
     model, criterion = build_model(args)
     model = torch.nn.DataParallel(model).cuda()
@@ -272,6 +286,11 @@ def main():
     for epoch in range(start_epoch, args.epochs + 1):
         print_log(save_path, '----- %s at epoch #%d' % ("Train", epoch))
         train_log = train(train_loader, model, criterion, optimizer, epoch)
+        
+        # 每个 Epoch 结束后强制垃圾回收，防止内存累积
+        gc.collect()
+        torch.cuda.empty_cache()
+        
         print_log(save_path, 'Loss: %.4f' % (train_log['loss']))
         print_log(save_path, 'Group class error: %.2f' % (train_log['group_class_error']))
         print('Current learning rate is %f' % scheduler.get_last_lr()[0])
@@ -352,12 +371,15 @@ def train(train_loader, model, criterion, optimizer, epoch):
 
         # reduce losses over all GPUs for logging purposes
         loss_dict_reduced = utils.reduce_dict(loss_dict)
-        loss_dict_reduced_unscaled = {f'{k}_unscaled': v
+        
+        # 关键修复：强制将所有 Tensor 转换为 Python float，彻底断开计算图引用
+        # 这可以防止 metric_logger 持有计算图导致的内存泄漏
+        loss_dict_reduced_unscaled = {f'{k}_unscaled': (v.item() if isinstance(v, torch.Tensor) else v)
                                       for k, v in loss_dict_reduced.items()}
-        loss_dict_reduced_scaled = {k: v * weight_dict[k]
+        loss_dict_reduced_scaled = {k: ((v * weight_dict[k]).item() if isinstance(v, torch.Tensor) else (v * weight_dict[k]))
                                     for k, v in loss_dict_reduced.items() if k in weight_dict}
         losses_reduced_scaled = sum(loss_dict_reduced_scaled.values())
-        loss_value = losses_reduced_scaled.item()
+        loss_value = losses_reduced_scaled  # 已经是 float 了
 
         if not math.isfinite(loss_value):
             print("Loss is {}, stopping training".format(loss_value))
@@ -371,9 +393,14 @@ def train(train_loader, model, criterion, optimizer, epoch):
             nn.utils.clip_grad_norm_(model.parameters(), args.max_norm)
         optimizer.step()
 
+        # 确保传入 logger 的全是 float，不持有任何 Tensor 引用
         metric_logger.update(loss=loss_value, **loss_dict_reduced_scaled, **loss_dict_reduced_unscaled)
-        metric_logger.update(group_class_error=loss_dict_reduced['group_class_error'])
+        gce = loss_dict_reduced['group_class_error']
+        metric_logger.update(group_class_error=(gce.item() if isinstance(gce, torch.Tensor) else gce))
         metric_logger.update(lr=optimizer.param_groups[0]["lr"])
+        
+        # 显式删除大对象，帮助 GC 回收
+        del images, targets, boxes, outputs, loss, loss_dict
 
     metric_logger.synchronize_between_processes()
     print("Averaged stats:", metric_logger)
