@@ -1,0 +1,16 @@
+----------------------------------------------------------------
+VideoMAE Enhancement: ENABLED
+Version: V2 (Dim: 1408)
+Feature Path: ./videomae_features_giant
+----------------------------------------------------------------
+--------------------Number of parameters--------------------
+Total parameters: 36,514,199
+Trainable parameters: 18,008,855
+Frozen parameters: 18,505,344
+Frozen ratio: 50.7%
+--------------------Learning Rate Configuration--------------------
+Head learning rate: 1e-05
+Backbone learning rate: 1.0000000000000002e-06 (scale: 0.1)
+Backbone params count: 3,551,232
+Head params count: 14,457,623
+----- Train at epoch #1
