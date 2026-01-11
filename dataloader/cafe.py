@@ -8,7 +8,8 @@ import numpy as np
 import random
 from PIL import Image
 
-ACTIVITIES = ['Queueing', 'Ordering', 'Eating/Drinking', 'Working/Studying', 'Fighting', 'TakingSelfie']
+# ACTIVITIES = ['Queueing', 'Ordering', 'Eating/Drinking', 'Working/Studying', 'Fighting', 'TakingSelfie']
+ACTIVITIES = ['NA', 'Crossing', 'Waiting', 'Queueing', 'Walking', 'Talking']
 
 
 # read annotation files

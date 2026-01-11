@@ -63,6 +63,35 @@ def read_dataset(args):
         print(f"    Creating dataset objects...")
         train_set = CafeDataset(train_frames, train_data, all_tracks, data_path, args, is_training=True)
         test_set = CafeDataset(test_frames, test_data, all_tracks, data_path, args, is_training=False)
+
+    elif args.dataset == 'social_cad':
+        # Default destination from convert_socialcad_final.py is .../cafe_social_cad
+        # Assuming args.data_path points to the parent folder of cafe_social_cad
+        data_path = os.path.join(args.data_path, 'cafe_social_cad') 
+        print(f"    Data path: {data_path}")
+
+        # Social-CAD Splits (1-44 total)
+        # Using 1-34 for Train, 35-44 for Test
+        TRAIN_SEQS = [str(i) for i in range(1, 35)]
+        TEST_SEQS = [str(i) for i in range(35, 45)]
+
+        print(f"    Loading training data ({len(TRAIN_SEQS)} seqs)")
+        train_data = cafe_read_annotations(data_path, TRAIN_SEQS, args.num_class)
+        train_frames = cafe_all_frames(train_data)
+        print(f"    Loaded {len(train_frames)} training clips")
+
+        print(f"    Loading test data ({len(TEST_SEQS)} seqs)")
+        test_data = cafe_read_annotations(data_path, TEST_SEQS, args.num_class)
+        test_frames = cafe_all_frames(test_data)
+        print(f"    Loaded {len(test_frames)} test clips")
+
+        print(f"    Loading actor tracklets from: {os.path.join(data_path, 'gt_tracks.pkl')}")
+        all_tracks = pickle.load(open(os.path.join(data_path, 'gt_tracks.pkl'), 'rb'))
+
+        print(f"    Creating dataset objects...")
+        train_set = CafeDataset(train_frames, train_data, all_tracks, data_path, args, is_training=True)
+        test_set = CafeDataset(test_frames, test_data, all_tracks, data_path, args, is_training=False)
+
     else:
         assert False
 
