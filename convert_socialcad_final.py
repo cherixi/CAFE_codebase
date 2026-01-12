@@ -2,7 +2,7 @@ import os
 import json
 import pickle
 import shutil
-import cv2
+# import cv2
 import numpy as np
 import glob
 from tqdm import tqdm
@@ -11,10 +11,16 @@ from tqdm import tqdm
 # CONFIGURATION
 # =============================================================================
 # Adjust these paths to your environment
-SOURCE_ROOT = r"D:\Social-CAD\data"  # Path containing sequence folders (e.g., seq_01, seq_02...)
-DEST_ROOT = r"D:\Cafe_Dataset\Cafe_Dataset\Dataset\cafe_social_cad"
-IMG_WIDTH = 1920
-IMG_HEIGHT = 1080
+
+# Path containing sequence folders with images (e.g. .../1/images/*.jpg)
+IMAGES_ROOT = r"D:\ActivityDataset"
+
+# Path containing annotation files (e.g. .../1/annotations.txt or .../1.txt)
+ANNOTATIONS_ROOT = r"D:\Social-human-activity-understanding-and-grouping-master\Social-human-activity-understanding-and-grouping-master\social_CAD\social_CAD"
+
+DEST_ROOT = r"D:\cafe_social_cad"
+IMG_WIDTH = 720
+IMG_HEIGHT = 480
 
 # Social-CAD Activity Mapping
 # 1:NA, 2:Crossing, 3:Waiting, 4:Queueing, 5:Walking, 6:Talking
@@ -70,45 +76,87 @@ def normalize_box(x1, y1, x2, y2, w_img, h_img):
     ]
 
 def convert_socialcad_to_cafe():
-    print(f"Starting conversion from {SOURCE_ROOT} to {DEST_ROOT}")
+    print(f"Starting conversion...")
+    print(f"Images Root: {IMAGES_ROOT}")
+    print(f"Annotations Root: {ANNOTATIONS_ROOT}")
+    
+    # --- DIAGNOSTIC BLOCK ---
+    if os.path.exists(IMAGES_ROOT):
+        items = os.listdir(IMAGES_ROOT)
+        print(f"[DEBUG] IMAGES_ROOT contains {len(items)} items. First 5: {items[:5]}")
+    else:
+        print(f"[ERROR] IMAGES_ROOT does not exist: {IMAGES_ROOT}")
+        return
+
+    if os.path.exists(ANNOTATIONS_ROOT):
+        items = os.listdir(ANNOTATIONS_ROOT)
+        print(f"[DEBUG] ANNOTATIONS_ROOT contains {len(items)} items. First 5: {items[:5]}")
+    else:
+        print(f"[ERROR] ANNOTATIONS_ROOT does not exist: {ANNOTATIONS_ROOT}")
+        return
+    # ------------------------
+
     ensure_dir(DEST_ROOT)
 
     global_tracks = {} # Key: (vid, clip), Value: {5: np.array of shape (N, 5)}
-    
-    # Iterate over sequences
-    # Expecting structure: SOURCE_ROOT/1/images/... and SOURCE_ROOT/1/annotations.txt (or consistent format)
-    # We'll assume the user has a loader or we parse a standard format.
-    # Since I don't have the explicit Social-CAD loader logic from the user, 
-    # I will provide a placeholder frame loop that user needs to adapt to their *specific* source files.
     
     # Placeholder for collecting all clips metadata for gt_tracks.txt
     all_tracks_txt_lines = []
 
     for seq_id in tqdm(ALL_SEQS, desc="Processing Sequences"):
-        seq_path = os.path.join(SOURCE_ROOT, seq_id)
-        # Check if seq exists (handle padding difference e.g., '01' vs '1')
-        if not os.path.exists(seq_path):
-            # Try zero padding
-            seq_path = os.path.join(SOURCE_ROOT, seq_id.zfill(2))
+        # -----------------------------------------------------------
+        # RESOLVE PATHS
+        # -----------------------------------------------------------
         
-        if not os.path.exists(seq_path):
-            print(f"Warning: Sequence {seq_id} not found at {seq_path}")
+        # 1. Image Directory Logic
+        # User specified: IMAGES_ROOT/seq01/ (Images directly inside)
+        # Note: ALL_SEQS are strings "1"..."44"
+        
+        # Attempt: IMAGES_ROOT/seq01/
+        img_folder_name = f"seq{seq_id.zfill(2)}"
+        img_seq_dir = os.path.join(IMAGES_ROOT, img_folder_name)
+        
+        if not os.path.exists(img_seq_dir):
+             # Fallback: maybe just 1, or 01
+            if os.path.exists(os.path.join(IMAGES_ROOT, seq_id)):
+                img_seq_dir = os.path.join(IMAGES_ROOT, seq_id)
+            elif os.path.exists(os.path.join(IMAGES_ROOT, seq_id.zfill(2))):
+                img_seq_dir = os.path.join(IMAGES_ROOT, seq_id.zfill(2))
+
+        # 2. Annotation File Logic
+        # User specified: ANNOTATIONS_ROOT/1_annotations.txt
+        ann_filename = f"{seq_id}_annotations.txt"
+        annotations_file = os.path.join(ANNOTATIONS_ROOT, ann_filename)
+        
+        if not os.path.exists(annotations_file):
+             # Fallback: Try with padding 01_annotations.txt
+            annotations_file = os.path.join(ANNOTATIONS_ROOT, f"{seq_id.zfill(2)}_annotations.txt")
+            
+        if not os.path.exists(annotations_file):
+             # Fallback: Try generic annotations.txt inside folder if exists, or just {id}.txt
+             # But prioritizing user request
+            pass
+
+        # Check validity
+        if not os.path.exists(img_seq_dir):
+            print(f"Warning: Images for sequence {seq_id} not found at {img_seq_dir}")
+            continue
+        if not os.path.exists(annotations_file):
+            print(f"Warning: Annotations for sequence {seq_id} not found at {annotations_file}")
             continue
 
         # DEST STRUCTURE: DEST_ROOT/seq_id/clip_id/
         ensure_dir(os.path.join(DEST_ROOT, seq_id))
 
-        # LOAD ANNOTATIONS FOR SEQUENCE
-        # Assuming annotations contain: frame_id, track_id, x1, y1, x2, y2, activity_id, group_id
-        # You need to implement `load_annotations` based on your raw file format
-        # For now, I'll simulate or assume a dict: { frame_idx: [ {track_id, bbox, act, group}, ... ] }
-        annotations_file = os.path.join(seq_path, 'annotations.txt') # adjust name
-        if not os.path.exists(annotations_file):
-             # Try other common names
-             annotations_file = os.path.join(seq_path, 'annotations.xml') 
-
         seq_data = load_socialcad_annotations(annotations_file) 
-        
+        # [DEBUG]
+        print(f"[DEBUG] Loaded {len(seq_data)} frames for sequence {seq_id}")
+        if len(seq_data) == 0:
+            print(f"[WARNING] No valid data parsed for seq {seq_id}. Check load_socialcad_annotations logic.")
+        else:
+            first_key = list(seq_data.keys())[0]
+            print(f"[DEBUG] Seq {seq_id} Sample Frame {first_key}: {seq_data[first_key]}")
+
         # Determine clips
         # CAFE strategy: sliding window? Or just centered on annotated frames?
         # User said: "Window: t is frame. Clip [t-5, t+4]. Total 10 frames."
@@ -121,12 +169,13 @@ def convert_socialcad_to_cafe():
         for t in annotated_frames:
             # t is the "key frame"
             # Frames to extract: t-5 to t+4
+
+            # [FIX] Boundary check: start_frame must be >= 1
+            if t - 5 < 1:
+                continue
+
             start_frame = t - 5
             end_frame = t + 5 # exclusive for range, so t+4 is last
-            
-            # Check bounds (assuming images exist)
-            # We assume images are named frame0001.jpg etc. or similar.
-            # check availability
             
             # Create Clip Folder
             clip_id = str(clip_counter)
@@ -139,30 +188,46 @@ def convert_socialcad_to_cafe():
 
             # Copy Images
             valid_clip = True
+            missing_frames = [] # Debug
             for i, f_idx in enumerate(range(start_frame, end_frame)):
                 # Source Image Name logic
-                src_img_name = f"{f_idx:05d}.jpg" # SocialCAD naming? usually 0-padded
-                # Try finding file
-                src_img_path = os.path.join(seq_path, 'images', src_img_name) 
+                # Try various common formats
+                src_img_paths_to_try = [
+                    os.path.join(img_seq_dir, f"frame{f_idx:04d}.jpg"), # User confirmed: frame0001.jpg
+                    os.path.join(img_seq_dir, f"{f_idx:05d}.jpg"),
+                    os.path.join(img_seq_dir, f"{f_idx:04d}.jpg"),
+                    os.path.join(img_seq_dir, f"{f_idx:06d}.jpg"),
+                    os.path.join(img_seq_dir, f"{f_idx}.jpg"),
+                    os.path.join(img_seq_dir, f"frame{f_idx:05d}.jpg"),
+                    os.path.join(img_seq_dir, f"frame_{f_idx:05d}.jpg"),
+                    os.path.join(img_seq_dir, f"{f_idx:05d}.png"),
+                    os.path.join(img_seq_dir, f"{f_idx:04d}.png")
+                ]
                 
-                if not os.path.exists(src_img_path):
-                     # Try 4 digits
-                    src_img_path = os.path.join(seq_path, 'images', f"{f_idx:04d}.jpg")
+                found_src = None
+                for p in src_img_paths_to_try:
+                    if os.path.exists(p):
+                        found_src = p
+                        break
                 
-                if not os.path.exists(src_img_path):
+                if found_src is None:
                     valid_clip = False
+                    missing_frames.append(f_idx)
+                    # [DEBUG] Silent skip for missing frames (common at end of videos)
                     break
                     
                 dst_img_name = f"frames_{i}.jpg" # CAFE expects frames_0.jpg ... frames_9.jpg
                 dst_img_path = os.path.join(images_dir, dst_img_name)
                 
                 if not os.path.exists(dst_img_path):
-                    shutil.copy(src_img_path, dst_img_path)
+                    shutil.copy(found_src, dst_img_path)
 
             if not valid_clip:
                 # Cleanup if failed
                 if os.path.exists(clip_dir):
                     shutil.rmtree(clip_dir)
+                # [DEBUG]
+                # print(f"[DEBUG] Clip {clip_id} invalid. Missing frames: {missing_frames}")
                 continue
 
             # Generate ann.json
@@ -206,7 +271,13 @@ def convert_socialcad_to_cafe():
                 act_str = ACTIVITY_MAP.get(entity['activity'], 'NA')
                 cafe_act_id = NAME_TO_CAFE_ID.get(act_str, 7) # Default to 7 (No) if unknown, or 0 (NA)
                 
+                
                 gid = entity['group_id']
+                
+                # CAFE convention: Individual = -1, Groups = 0, 1, 2...
+                # Updated logic: if group size <= 1, FORCE gid to -1 for txt output
+                if group_counts.get(gid, 0) <= 1:
+                    gid = -1
                 
                 # Ensure seq_id is int for txt format
                 try:
@@ -255,10 +326,18 @@ def load_socialcad_annotations(file_path):
     data_map = {}
     
     if not os.path.exists(file_path):
+        print(f"[ERROR] File not found: {file_path}")
         return {}
 
     with open(file_path, 'r') as f:
         lines = f.readlines()
+        
+        # [DEBUG]
+        if len(lines) > 0:
+            print(f"[DEBUG] Processing {os.path.basename(file_path)}: {len(lines)} lines. First line: {lines[0].strip()}")
+        else:
+            print(f"[DEBUG] File is empty: {file_path}")
+
         for line in lines:
             parts = line.strip().split('\t')
             # If split by tab fails (len < 6), try space/comma just in case
@@ -267,23 +346,37 @@ def load_socialcad_annotations(file_path):
                 if len(parts) < 6:
                     parts = line.strip().split()
             
-            if len(parts) < 9: continue
+            if len(parts) < 9: 
+                # [DEBUG]
+                # print(f"Skipping line: insufficient parts {len(parts)}: {line.strip()}")
+                continue
             
             try:
                 # Inferred mapping:
                 # 1	339	191	422	356	5	4	3	1
+                
+                # IMPORTANT: In file 1_annotations.txt, first col is '1'. 
+                # Is '1' the frame ID? Usually datasets index frame 1..N.
+                # Or is '1' the Track ID? 
+                
+                # Let's verify against logic:
+                # The user's sample output confirms lines like: "1 339 ..."
+                # If column 0 is frame_idx, then Frame 1 has annotations.
+                
                 frame_idx = int(parts[0])
                 x1 = float(parts[1])
                 y1 = float(parts[2])
                 x2 = float(parts[3])
                 y2 = float(parts[4])
                 
-                activity = int(parts[5]) 
-                # parts[6] is Group Action, ignored for now as we map Ind Action to Group Action logic later if needed
-                # or strictly use parts[5] as per ACTIVITY_MAP
+                # Check for empty string or parse errors specifically
+                if str(parts[5]).strip() == '': activity = 1 
+                else: activity = int(parts[5])
                 
                 track_id = int(parts[7])
-                group_id = int(parts[8])
+                
+                group_id_raw = int(parts[8])
+                group_id = group_id_raw - 1 if group_id_raw > 0 else 0 
                 
                 if frame_idx not in data_map:
                     data_map[frame_idx] = []
@@ -292,9 +385,11 @@ def load_socialcad_annotations(file_path):
                     'track_id': track_id,
                     'bbox': [x1, y1, x2, y2],
                     'activity': activity,
-                    'group_id': group_id
+                    'group_id': group_id # Now 0-based
                 })
-            except ValueError:
+            except ValueError as e:
+                # [DEBUG]
+                # print(f"ValueError parsing line: {line.strip()} - {e}")
                 continue
                 
     return data_map
@@ -339,12 +434,31 @@ def create_ann_json(frame_entities):
         act_name = ACTIVITY_MAP.get(act_id, 'NA')
         
         # Determine Label
-        if gid > 0 and group_counts[gid] > 1:
-            label = f"group{gid}"
+        # Logic update: group_id is now 0-based.
+        # But we need to distinguish "Individual" (no group) from "Group 0".
+        # If original file had correct grouping, maybe we should just treat filtered individuals later.
+        
+        # User requested "Group ID start from 0".
+        # In current logic: group_counts keys are now 0, 1, 2...
+        
+        # Check if this group ID has > 1 member
+        if group_counts[gid] > 1:
+            # [FIX 2] User requested JSON group label start from 1
+            # Current gid is 0-based, so we output group{gid+1}
+            label = f"group{gid + 1}"
         else:
+            # If it's a single person group, CAFE treats as individual
             label = "individual"
+            # And for gt_tracks.txt logic later, we might want to set gid to -1
             
         # Structure for figure
+        
+        # [FIX 3] Clip coordinates to 0
+        b_x1 = max(0.0, bbox[0])
+        b_y1 = max(0.0, bbox[1])
+        b_x2 = max(0.0, bbox[2])
+        b_y2 = max(0.0, bbox[3])
+        
         figure = {
             "id": tid,
             "label": label,
@@ -358,11 +472,12 @@ def create_ann_json(frame_entities):
             ],
             "shapes": [
                 {
+                    "keyframe": True, # [FIX 1] Added keyframe: true
                     "type": "rect", # Assumption
                     "frame": 5, # We are centering at frame 5 (0-9 range, 5 is index 5 or 4? User said t is annotated. Let's say index 5)
                     "coordinates": [
-                        [bbox[0], bbox[1]],
-                        [bbox[2], bbox[3]]
+                        [b_x1, b_y1],
+                        [b_x2, b_y2]
                     ]
                 }
             ]
