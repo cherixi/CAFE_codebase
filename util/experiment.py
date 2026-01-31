@@ -82,21 +82,18 @@ def plot_curves(path: str, history: Dict):
     plt.savefig(loss_path, bbox_inches="tight")
     plt.close()
 
-    # mAP curves (if available)
+    # Social accuracy curve (if available)
     plt.figure(figsize=(10, 6))
     for split in ["val"]:
         if split in history:
             epochs = [h["epoch"] for h in history[split]]
-            map1 = [h["group_mAP_1.0"] for h in history[split] if "group_mAP_1.0" in h]
-            map05 = [h["group_mAP_0.5"] for h in history[split] if "group_mAP_0.5" in h]
-            if len(epochs) == len(map1) and len(epochs) > 0:
-                plt.plot(epochs, map1, label=f"{split}_mAP@1.0")
-            if len(epochs) == len(map05) and len(epochs) > 0:
-                plt.plot(epochs, map05, label=f"{split}_mAP@0.5")
+            social_acc = [h["social_accuracy"] for h in history[split] if "social_accuracy" in h]
+            if len(epochs) == len(social_acc) and len(epochs) > 0:
+                plt.plot(epochs, social_acc, label=f"{split}_social_accuracy")
 
     plt.xlabel("Epoch")
-    plt.ylabel("mAP")
-    plt.title("Validation mAP")
+    plt.ylabel("Accuracy")
+    plt.title("Validation Social Accuracy")
     plt.legend()
     map_path = path.replace(".png", "_map.png")
     plt.savefig(map_path, bbox_inches="tight")

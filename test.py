@@ -161,25 +161,22 @@ def main():
     print(f"    Model weights loaded from {args.model_path}")
 
     print("[6/6] Initializing evaluation metrics...")
-    metrics = evaluation.GAD_Evaluation(args)
-    print("    Metrics initialized")
+    print("    Metrics initialized (social accuracy)")
 
     print("\n" + "=" * 60)
     print("Starting evaluation...")
     print("=" * 60 + "\n")
-    test_log, result = validate(test_loader, model, criterion, metrics)
+    test_log, social_acc = validate(test_loader, model, criterion)
     
     print("\n" + "=" * 60)
     print("EVALUATION RESULTS")
     print("=" * 60)
-    print("group mAP at 1.0: %.2f" % result['group_mAP_1.0'])
-    print("group mAP at 0.5: %.2f" % result['group_mAP_0.5'])
-    print("outlier mIoU: %.2f" % result['outlier_mIoU'])
+    print("social accuracy: %.4f" % social_acc)
     print("=" * 60 + "\n")
 
 
 @torch.no_grad()
-def validate(test_loader, model, criterion, metrics):
+def validate(test_loader, model, criterion):
     model.eval()
     criterion.eval()
 
@@ -192,6 +189,9 @@ def validate(test_loader, model, criterion, metrics):
     
     print(f"Processing {len(test_loader)} batches...")
     print(f"Saving predictions to: {file_path}")
+
+    total_correct = 0
+    total_count = 0
 
     for i, (images, targets, infos) in enumerate(metric_logger.log_every(test_loader, print_freq, header)):
         if i % max(1, len(test_loader) // 10) == 0:
@@ -223,16 +223,24 @@ def validate(test_loader, model, criterion, metrics):
 
         make_txt(boxes, infos, outputs, name_to_vid, file_path)
 
+        # social accuracy (individual actions)
+        pred_actions = outputs['pred_actions'].argmax(dim=-1)  # [B, N]
+        for b in range(len(targets)):
+            tgt_actions = targets[b]['actions'].squeeze(0)  # [N]
+            valid_mask = tgt_actions != (args.num_class + 1)
+            if valid_mask.numel() == 0:
+                continue
+            total_correct += (pred_actions[b][valid_mask] == tgt_actions[valid_mask]).sum().item()
+            total_count += valid_mask.sum().item()
+
     # gather the stats from all processes
     metric_logger.synchronize_between_processes()
     print("\nAveraged stats:", metric_logger)
 
-    print("\nEvaluating predictions...")
-    detections = open(file_path, "r")
-    result = metrics.evaluate(detections)
+    social_acc = float(total_correct) / float(total_count) if total_count > 0 else 0.0
     print("Evaluation completed!")
 
-    return {k: meter.global_avg for k, meter in metric_logger.meters.items()}, result
+    return {k: meter.global_avg for k, meter in metric_logger.meters.items()}, social_acc
 
 
 def make_txt(boxes, infos, outputs, name_to_vid, file_path):

@@ -127,7 +127,7 @@ parser.add_argument('--eval_image_height', default=720, type=int, help='Image he
 args = parser.parse_args()
 path = None
 
-SEQS_CAFE = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24]
+SEQS_CAFE = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44]
 
 # ACTIVITIES = ['Queueing', 'Ordering', 'Drinking', 'Working', 'Fighting', 'Selfie', 'Individual', 'No']
 ACTIVITIES = ['NA', 'Crossing', 'Waiting', 'Queueing', 'Walking', 'Talking', 'Individual', 'No']
@@ -275,8 +275,6 @@ def main():
     if not os.path.exists(path):
         os.makedirs(path)
 
-    metrics = evaluation.GAD_Evaluation(args)
-
     # experiment logging
     history = {"train": [], "val": []}
     best = {}
@@ -302,22 +300,19 @@ def main():
 
         if epoch % args.test_freq == 0:
             print_log(save_path, '----- %s at epoch #%d' % ("Test", epoch))
-            test_log, result = validate(test_loader, model, criterion, metrics, epoch)
+            test_log, social_acc = validate(test_loader, model, criterion, epoch)
             print_log(save_path, 'Loss: %.4f' % (test_log['loss']))
             print_log(save_path, 'Group class error: %.2f' % (test_log['group_class_error']))
-            print_log(save_path, "group mAP at 1.0: %.2f" % result['group_mAP_1.0'])
-            print_log(save_path, "group mAP at 0.5: %.2f" % result['group_mAP_0.5'])
-            print_log(save_path, "outlier mIoU: %.2f" % result['outlier_mIoU'])
+            print_log(save_path, "social accuracy: %.4f" % social_acc)
 
             # merge metrics
             val_metrics = dict(test_log)
             val_metrics.update({
-                "group_mAP_1.0": result['group_mAP_1.0'],
-                "group_mAP_0.5": result['group_mAP_0.5'],
-                "outlier_mIoU": result['outlier_mIoU'],
+                "social_accuracy": social_acc,
             })
             history = experiment.update_history(history, "val", epoch, val_metrics)
-            best = experiment.update_best(best, epoch, {**val_metrics, "loss": test_log['loss']})
+            best = experiment.update_best(best, epoch, {**val_metrics, "loss": test_log['loss']},
+                                          keys=("social_accuracy", "loss"))
 
             # save summary and curves
             summary_path = os.path.join(save_path, "summary.json")
@@ -410,7 +405,7 @@ def train(train_loader, model, criterion, optimizer, epoch):
 
 
 @torch.no_grad()
-def validate(test_loader, model, criterion, metrics, epoch):
+def validate(test_loader, model, criterion, epoch):
     model.eval()
     criterion.eval()
 
@@ -421,6 +416,9 @@ def validate(test_loader, model, criterion, metrics, epoch):
     print_freq = len(test_loader)
     name_to_vid = {name: i + 1 for i, name in enumerate(SEQS_CAFE)}
     file_path = path + '/pred_group_epoch_%d.txt' % epoch
+
+    total_correct = 0
+    total_count = 0
 
     for i, (images, targets, infos) in enumerate(metric_logger.log_every(test_loader, print_freq, header)):
         images = images.cuda()  # [B, T, 3, H, W]
@@ -453,14 +451,23 @@ def validate(test_loader, model, criterion, metrics, epoch):
 
         make_txt(boxes, infos, outputs, name_to_vid, file_path)
 
+        # social accuracy (individual actions)
+        pred_actions = outputs['pred_actions'].argmax(dim=-1)  # [B, N]
+        for b in range(len(targets)):
+            tgt_actions = targets[b]['actions'].squeeze(0)  # [N]
+            valid_mask = tgt_actions != (args.num_class + 1)
+            if valid_mask.numel() == 0:
+                continue
+            total_correct += (pred_actions[b][valid_mask] == tgt_actions[valid_mask]).sum().item()
+            total_count += valid_mask.sum().item()
+
     # gather the stats from all processes
     metric_logger.synchronize_between_processes()
     print("Averaged stats:", metric_logger)
 
-    detections = open(file_path, "r")
-    result = metrics.evaluate(detections)
+    social_acc = float(total_correct) / float(total_count) if total_count > 0 else 0.0
 
-    return {k: meter.global_avg for k, meter in metric_logger.meters.items()}, result
+    return {k: meter.global_avg for k, meter in metric_logger.meters.items()}, social_acc
 
 
 def make_txt(boxes, infos, outputs, name_to_vid, file_path):
