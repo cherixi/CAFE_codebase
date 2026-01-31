@@ -166,7 +166,8 @@ class SetCriterion(nn.Module):
         """Group consistency loss"""
         actor_embeds = outputs['actor_embeddings']
 
-        consistency_loss = 0.0
+        consistency_loss = torch.zeros((), device=actor_embeds.device)
+        eps = 1e-6
 
         for batch_idx in range(actor_embeds.shape[0]):
             membership = targets[batch_idx]["membership"][0]
@@ -191,19 +192,24 @@ class SetCriterion(nn.Module):
                     # Use tensor operations to avoid deprecated indexing warning
                     pos_indices = (non_dummy_membership == group_id).nonzero(as_tuple=True)[0]
                     positive_idx = pos_indices[pos_indices != actor_idx]
+                    if positive_idx.numel() == 0:
+                        continue
                     positive_samples = sim[actor_idx][positive_idx]
 
-                    negative_idx = (non_dummy_membership != group_id).nonzero(as_tuple=True)
+                    negative_idx = (non_dummy_membership != group_id).nonzero(as_tuple=True)[0]
+                    if negative_idx.numel() == 0:
+                        continue
                     negative_samples = sim[actor_idx][negative_idx]
 
                     nominator = torch.exp(positive_samples)
                     denominator = torch.exp(torch.cat((positive_samples, negative_samples)))
-                    loss_partial = -torch.log(torch.sum(nominator) / torch.sum(denominator))
+                    loss_partial = -torch.log(torch.sum(nominator) / (torch.sum(denominator) + eps) + eps)
                     group_count += 1
 
                     consistency_loss += loss_partial
 
-            consistency_loss /= group_count
+            if group_count > 0:
+                consistency_loss /= group_count
 
         consistency_loss /= actor_embeds.shape[0]
         losses = {'loss_consistency': consistency_loss}
