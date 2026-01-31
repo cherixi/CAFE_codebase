@@ -1,0 +1,20 @@
+item {
+  name: "Crossing"
+  id: 1
+}
+item {
+  name: "Waiting"
+  id: 2
+}
+item {
+  name: "Queueing"
+  id: 3
+}
+item {
+  name: "Walking"
+  id: 4
+}
+item {
+  name: "Talking"
+  id: 5
+}

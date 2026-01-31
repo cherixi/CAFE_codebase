@@ -232,7 +232,22 @@ class CafeDataset(data.Dataset):
                 gt_boxes.append([x_c / image_w, y_c / image_h, w / image_w, h / image_h])
 
             temp_boxes = np.ones((num_boxes, 4))
-            for j, track in enumerate(self.tracks[(vid, cid)][fid]):                
+            tracks_key = (vid, cid)
+            if tracks_key not in self.tracks:
+                tracks_key = (str(vid), str(cid))
+            tracks_clip = self.tracks.get(tracks_key)
+            if tracks_clip is None:
+                raise KeyError(f"Missing tracks for clip ({vid}, {cid})")
+
+            fid_use = fid
+            if fid_use not in tracks_clip:
+                key_frame = self.anns[frame].get('key_frame', None)
+                if key_frame in tracks_clip:
+                    fid_use = key_frame
+                else:
+                    fid_use = next(iter(tracks_clip.keys()))
+
+            for j, track in enumerate(tracks_clip[fid_use]):                
                 _id, x1, y1, x2, y2 = track
 
                 if x1 < 0.0 and y2 < 0.0:

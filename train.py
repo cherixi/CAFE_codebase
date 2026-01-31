@@ -25,18 +25,18 @@ from util import experiment
 parser = argparse.ArgumentParser(description='Group Activity Detection train code', add_help=False)
 
 # Dataset specification
-parser.add_argument('--dataset', default='cafe', type=str, help='dataset name')
+parser.add_argument('--dataset', default='cafe_social_cad', type=str, help='dataset name')
 parser.add_argument('--val_mode', action='store_true')
 parser.add_argument('--split', default='place', type=str, help='dataset split. place or view')
-parser.add_argument('--data_path', default='/share/share/aixi/Cafe_Dataset/Cafe_Dataset/Cafe_Dataset/Dataset/', type=str, help='data path')
-parser.add_argument('--image_width', default=1120, type=int, help='Image width to resize (1120 for DINOv2, 1280 for ResNet)')
-parser.add_argument('--image_height', default=630, type=int, help='Image height to resize (630 for DINOv2, 720 for ResNet)')
+parser.add_argument('--data_path', default='D:\\', type=str, help='data path')
+parser.add_argument('--image_width', default=714, type=int, help='Image width to resize (1120 for DINOv2, 1280 for ResNet)')
+parser.add_argument('--image_height', default=476, type=int, help='Image height to resize (630 for DINOv2, 720 for ResNet)')
 parser.add_argument('--random_sampling', action='store_true', help='random sampling strategy')
-parser.add_argument('--num_frame', default=5, type=int, help='number of frames for each clip')
-parser.add_argument('--num_class', default=6, type=int, help='number of activity classes')
+parser.add_argument('--num_frame', default=8, type=int, help='number of frames for each clip')
+parser.add_argument('--num_class', default=5, type=int, help='number of activity classes')
 parser.add_argument('--no_mae', action='store_true', help='disable VideoMAE enhancement')
 parser.add_argument('--mae_version', default='v2', type=str, choices=['v1', 'v2'], help='VideoMAE version: v1 (768) or v2 (1408)')
-parser.add_argument('--videomae_feats_path', default='./videomae_features_giant', type=str, help='path to videomae features')
+parser.add_argument('--videomae_feats_path', default='./videomae_features_giant_socialcad', type=str, help='path to videomae features')
 
 # Backbone parameters
 parser.add_argument('--backbone', default='resnet18', type=str, help='feature extraction backbone (resnet18, resnet50, dinov2_vits14, dinov2_vitb14, dinov2_vitl14, dinov2_vitg14)')
@@ -106,7 +106,7 @@ parser.add_argument('--gradient_clipping', action='store_true', help='use gradie
 parser.add_argument('--max_norm', default=1.0, type=float, help='gradient clipping max norm')
 
 # GPU
-parser.add_argument('--device', default="0, 1", type=str, help='GPU device')
+parser.add_argument('--device', default="0", type=str, help='GPU device')
 parser.add_argument('--distributed', action='store_true')
 
 # Load model
@@ -117,12 +117,12 @@ parser.add_argument('--model_path', default="", type=str, help='pretrained model
 parser.add_argument('--result_path', default="./outputs/")
 
 # Evaluation
-parser.add_argument('--groundtruth', default='./evaluation/gt_tracks.txt', type=argparse.FileType("r"))
-parser.add_argument('--labelmap', default='./label_map/group_action_list.pbtxt', type=argparse.FileType("r"))
+parser.add_argument('--groundtruth', default='./evaluation/gt_tracks_socialcad.txt', type=argparse.FileType("r"))
+parser.add_argument('--labelmap', default='./label_map/group_action_list_socialcad.pbtxt', type=argparse.FileType("r"))
 parser.add_argument('--giou_thresh', default=1.0, type=float)
 parser.add_argument('--eval_type', default="gt_base", type=str, help='gt_based or detection_based')
-parser.add_argument('--eval_image_width', default=1280, type=int, help='Image width for evaluation (must match gt_tracks.txt)')
-parser.add_argument('--eval_image_height', default=720, type=int, help='Image height for evaluation (must match gt_tracks.txt)')
+parser.add_argument('--eval_image_width', default=720, type=int, help='Image width for evaluation (must match gt_tracks.txt)')
+parser.add_argument('--eval_image_height', default=480, type=int, help='Image height for evaluation (must match gt_tracks.txt)')
 
 args = parser.parse_args()
 path = None
@@ -130,7 +130,7 @@ path = None
 SEQS_CAFE = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44]
 
 # ACTIVITIES = ['Queueing', 'Ordering', 'Drinking', 'Working', 'Fighting', 'Selfie', 'Individual', 'No']
-ACTIVITIES = ['NA', 'Crossing', 'Waiting', 'Queueing', 'Walking', 'Talking', 'Individual', 'No']
+ACTIVITIES = ['Crossing', 'Waiting', 'Queueing', 'Walking', 'Talking', 'Individual', 'No']
 
 
 def main():

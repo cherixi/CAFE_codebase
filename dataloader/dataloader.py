@@ -64,7 +64,7 @@ def read_dataset(args):
         train_set = CafeDataset(train_frames, train_data, all_tracks, data_path, args, is_training=True)
         test_set = CafeDataset(test_frames, test_data, all_tracks, data_path, args, is_training=False)
 
-    elif args.dataset == 'social_cad':
+    elif args.dataset == 'cafe_social_cad':
         # Default destination from convert_socialcad_final.py is .../cafe_social_cad
         # Assuming args.data_path points to the parent folder of cafe_social_cad
         data_path = os.path.join(args.data_path, 'cafe_social_cad') 
