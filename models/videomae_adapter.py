@@ -1,46 +1,94 @@
 import torch
 import torch.nn as nn
 
+
 class VideoMAEAdapter(nn.Module):
-    def __init__(self, global_dim, hidden_dim, dropout=0.1):
+    def __init__(self, global_dim, hidden_dim, fusion="adaptive_two_branch", dropout=0.1):
         super().__init__()
-        # 1. 降维: 768 -> 256
+        self.fusion = fusion
+
+        # Project global feature to hidden dim
         self.proj = nn.Sequential(
             nn.Linear(global_dim, hidden_dim),
             nn.LayerNorm(hidden_dim),
             nn.ReLU(),
             nn.Dropout(dropout)
         )
-        
-        # 2. 门控系数生成器 (输出 0~1 的标量)
-        self.actor_gate = nn.Sequential(nn.Linear(hidden_dim * 2, 1), nn.Sigmoid())
-        self.group_gate = nn.Sequential(nn.Linear(hidden_dim * 2, 1), nn.Sigmoid())
+
+        # Static concat projection (shared for actor/group)
+        if fusion == "static_concat":
+            self.concat_proj = nn.Sequential(
+                nn.Linear(hidden_dim * 2, hidden_dim),
+                nn.LayerNorm(hidden_dim),
+                nn.ReLU(),
+                nn.Dropout(dropout)
+            )
+        else:
+            self.concat_proj = None
+
+        # Adaptive shared gate
+        if fusion == "adaptive_shared":
+            self.shared_gate = nn.Sequential(nn.Linear(hidden_dim * 2, 1), nn.Sigmoid())
+        else:
+            self.shared_gate = None
+
+        # Adaptive two-branch gates (actor + group)
+        if fusion == "adaptive_two_branch":
+            self.actor_gate = nn.Sequential(nn.Linear(hidden_dim * 2, 1), nn.Sigmoid())
+            self.group_gate = nn.Sequential(nn.Linear(hidden_dim * 2, 1), nn.Sigmoid())
+        else:
+            self.actor_gate = None
+            self.group_gate = None
 
     def forward(self, actor_tokens, group_tokens, global_feat):
         """
         :param actor_tokens: [B, N, C]
         :param group_tokens: [B, K, C]
-        :param global_feat: [B, 768]
+        :param global_feat: [B, D]
         """
-        # global_feat: [B, 768]
-        global_emb = self.proj(global_feat) # [B, C]
-        
-        # --- 增强 Actor ---
-        # actor_tokens: [B, N, C]
-        B, N, C = actor_tokens.shape
-        global_expanded_actor = global_emb.unsqueeze(1).repeat(1, N, 1) # [B, N, C]
-        
-        # 计算融合系数 alpha
-        alpha = self.actor_gate(torch.cat([actor_tokens, global_expanded_actor], dim=-1))
-        actor_out = actor_tokens + alpha * global_expanded_actor # 残差融合
-        
-        # --- 增强 Group ---
-        # group_tokens: [B, K, C]
-        B, K, _ = group_tokens.shape
-        global_expanded_group = global_emb.unsqueeze(1).repeat(1, K, 1) # [B, K, C]
-        
-        # 计算融合系数 beta
-        beta = self.group_gate(torch.cat([group_tokens, global_expanded_group], dim=-1))
-        group_out = group_tokens + beta * global_expanded_group
-        
-        return actor_out, group_out
+        global_emb = self.proj(global_feat)  # [B, C]
+
+        if self.fusion == "static_add":
+            return (actor_tokens + global_emb.unsqueeze(1),
+                    group_tokens + global_emb.unsqueeze(1))
+
+        if self.fusion == "static_concat":
+            _, n, _ = actor_tokens.shape
+            _, k, _ = group_tokens.shape
+            global_actor = global_emb.unsqueeze(1).expand(-1, n, -1)
+            global_group = global_emb.unsqueeze(1).expand(-1, k, -1)
+            actor_out = self.concat_proj(torch.cat([actor_tokens, global_actor], dim=-1))
+            group_out = self.concat_proj(torch.cat([group_tokens, global_group], dim=-1))
+            return actor_out, group_out
+
+        if self.fusion == "static_pool":
+            actor_pool = actor_tokens.mean(dim=1)  # [B, C]
+            group_pool = group_tokens.mean(dim=1)  # [B, C]
+            actor_delta = (actor_pool + global_emb).unsqueeze(1)
+            group_delta = (group_pool + global_emb).unsqueeze(1)
+            return (actor_tokens + actor_delta,
+                    group_tokens + group_delta)
+
+        if self.fusion == "adaptive_shared":
+            _, n, _ = actor_tokens.shape
+            _, k, _ = group_tokens.shape
+            global_actor = global_emb.unsqueeze(1).expand(-1, n, -1)
+            global_group = global_emb.unsqueeze(1).expand(-1, k, -1)
+            alpha = self.shared_gate(torch.cat([actor_tokens, global_actor], dim=-1))
+            beta = self.shared_gate(torch.cat([group_tokens, global_group], dim=-1))
+            actor_out = actor_tokens + alpha * global_actor
+            group_out = group_tokens + beta * global_group
+            return actor_out, group_out
+
+        if self.fusion == "adaptive_two_branch":
+            _, n, _ = actor_tokens.shape
+            _, k, _ = group_tokens.shape
+            global_actor = global_emb.unsqueeze(1).expand(-1, n, -1)
+            global_group = global_emb.unsqueeze(1).expand(-1, k, -1)
+            alpha = self.actor_gate(torch.cat([actor_tokens, global_actor], dim=-1))
+            beta = self.group_gate(torch.cat([group_tokens, global_group], dim=-1))
+            actor_out = actor_tokens + alpha * global_actor
+            group_out = group_tokens + beta * global_group
+            return actor_out, group_out
+
+        raise ValueError(f"Unknown VideoMAE fusion mode: {self.fusion}")

@@ -37,6 +37,9 @@ parser.add_argument('--num_class', default=6, type=int, help='number of activity
 parser.add_argument('--no_mae', action='store_true', help='disable VideoMAE enhancement')
 parser.add_argument('--mae_version', default='v2', type=str, choices=['v1', 'v2'], help='VideoMAE version: v1 (768) or v2 (1408)')
 parser.add_argument('--videomae_feats_path', default='./videomae_features_giant', type=str, help='path to videomae features')
+parser.add_argument('--mae_fusion', default='adaptive_two_branch', type=str,
+                    choices=['none', 'static_add', 'static_concat', 'static_pool', 'adaptive_shared', 'adaptive_two_branch'],
+                    help='VideoMAE fusion mode')
 
 # Backbone parameters
 parser.add_argument('--backbone', default='resnet18', type=str, help='feature extraction backbone (resnet18, resnet50, dinov2_vits14, dinov2_vitb14, dinov2_vitl14, dinov2_vitg14)')
@@ -64,6 +67,11 @@ parser.add_argument('--distance_threshold', default=0.2, type=float, help='dista
 # HOI Graph
 parser.add_argument('--hoi_nheads', default=4, type=int, help='number of heads for HOI graph')
 parser.add_argument('--hoi_topk', default=0, type=int, help='topk for HOI graph sparsity (0 for full)')
+parser.add_argument('--hoi_mode', default='penalty', type=str,
+                    choices=['none', 'bias', 'hard_mask', 'penalty'],
+                    help='HOI graph ablation mode')
+parser.add_argument('--hoi_hard_thresh', default=None, type=float,
+                    help='distance threshold for hard_mask mode (if None, use distance_threshold)')
 
 # Temporal Modeling
 parser.add_argument('--temporal_layers', default=3, type=int, help='number of temporal attention layers')
@@ -146,12 +154,15 @@ def main():
         os.makedirs(save_path)
 
     # Logic for use_mae
-    args.use_mae = not args.no_mae
+    if args.no_mae:
+        args.mae_fusion = 'none'
+    args.use_mae = (not args.no_mae) and args.mae_fusion != 'none'
 
     if args.use_mae:
         print_log(save_path, f"----------------------------------------------------------------")
         print_log(save_path, f"VideoMAE Enhancement: ENABLED")
         print_log(save_path, f"Version: {args.mae_version.upper()} (Dim: {1408 if args.mae_version == 'v2' else 768})")
+        print_log(save_path, f"Fusion: {args.mae_fusion}")
         print_log(save_path, f"Feature Path: {args.videomae_feats_path}")
         print_log(save_path, f"----------------------------------------------------------------")
     else:

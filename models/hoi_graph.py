@@ -6,11 +6,12 @@ import torch.nn.functional as F
 
 class FrameHOIGraph(nn.Module):
     """
-    Frame-level actor-to-actor graph modeling with multi-head attention
-    and learnable geometric bias (soft distance penalty).
+    Frame-level actor-to-actor graph modeling with multi-head attention.
+    Supports additive geometry bias, hard distance mask, and logit penalty.
     """
 
-    def __init__(self, d_model=256, nhead=4, dropout=0.1, topk=0):
+    def __init__(self, d_model=256, nhead=4, dropout=0.1, topk=0,
+                 use_geom_bias=True, use_logit_penalty=True, hard_mask_thresh=None):
         super().__init__()
         self.d_model = d_model
         self.nhead = nhead
@@ -22,14 +23,25 @@ class FrameHOIGraph(nn.Module):
         self.v_proj = nn.Linear(d_model, d_model)
         self.out_proj = nn.Linear(d_model, d_model)
 
+        self.use_geom_bias = use_geom_bias
+        self.use_logit_penalty = use_logit_penalty
+        self.hard_mask_thresh = hard_mask_thresh
+
         # Geometry encoder -> per-head bias
-        self.geom_mlp = nn.Sequential(
-            nn.Linear(5, d_model),
-            nn.ReLU(inplace=True),
-            nn.Linear(d_model, nhead)
-        )
+        if self.use_geom_bias:
+            self.geom_mlp = nn.Sequential(
+                nn.Linear(5, d_model),
+                nn.ReLU(inplace=True),
+                nn.Linear(d_model, nhead)
+            )
+        else:
+            self.geom_mlp = None
+
         # Learnable distance temperature for soft penalty
-        self.log_sigma = nn.Parameter(torch.zeros(1))
+        if self.use_logit_penalty:
+            self.log_sigma = nn.Parameter(torch.zeros(1))
+        else:
+            self.register_buffer("log_sigma", torch.zeros(1))
 
         self.dropout = nn.Dropout(dropout)
         self.norm1 = nn.LayerNorm(d_model)
@@ -74,15 +86,26 @@ class FrameHOIGraph(nn.Module):
 
         # [B*T, n, n, nhead] geom bias
         geom_feat, dist = self._pairwise_geometry(boxes)
-        geom_bias = self.geom_mlp(geom_feat)  # [B*T, n, n, nhead]
+        if self.use_geom_bias:
+            geom_bias = self.geom_mlp(geom_feat)  # [B*T, n, n, nhead]
+        else:
+            geom_bias = None
 
         # attention scores
         scores = torch.einsum("bqhd,bkhd->bhqk", q, k) / math.sqrt(self.dk)  # [B*T, h, n, n]
-        scores = scores + geom_bias.permute(0, 3, 1, 2)  # align head dim
+        if geom_bias is not None:
+            scores = scores + geom_bias.permute(0, 3, 1, 2)  # align head dim
 
         # soft distance penalty
-        sigma = torch.exp(self.log_sigma) + 1e-6
-        scores = scores - (dist.unsqueeze(1) ** 2) / (sigma ** 2)
+        if self.use_logit_penalty:
+            sigma = torch.exp(self.log_sigma) + 1e-6
+            scores = scores - (dist.unsqueeze(1) ** 2) / (sigma ** 2)
+
+        if self.hard_mask_thresh is not None:
+            hard_mask = dist > self.hard_mask_thresh
+            diag_idx = torch.arange(n, device=dist.device)
+            hard_mask[:, diag_idx, diag_idx] = False
+            scores = scores.masked_fill(hard_mask.unsqueeze(1), float("-inf"))
 
         if attn_mask is not None:
             scores = scores.masked_fill(attn_mask.unsqueeze(1), float("-inf"))

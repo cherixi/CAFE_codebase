@@ -8,6 +8,7 @@ __pycache__/
 cafe_checkpoints.zip
 # 忽略gt_tracks.txt
 gt_tracks.txt
+gt_tracks_socialcad.txt
 
 # 忽略videomae_features文件夹
 videomae_features/
@@ -20,6 +21,7 @@ auto_gpu_runner.py
 
 # 忽略videomae_features_giant文件夹
 videomae_features_giant/
+videomae_features_giant_socialcad/
 
 # 忽略.vscode文件夹
 .vscode/

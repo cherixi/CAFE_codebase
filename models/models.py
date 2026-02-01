@@ -45,9 +45,28 @@ class GADTR(nn.Module):
         self.group_emb = nn.Linear(self.hidden_dim, self.num_class + 1)
 
         # HOI mapping + temporal modeling
+        self.hoi_mode = getattr(args, 'hoi_mode', 'penalty')
         hoi_nheads = getattr(args, 'hoi_nheads', 4)
         hoi_topk = getattr(args, 'hoi_topk', 0)
-        self.frame_graph = FrameHOIGraph(self.hidden_dim, nhead=hoi_nheads, dropout=args.drop_rate, topk=hoi_topk)
+        hoi_hard_thresh = getattr(args, 'hoi_hard_thresh', None)
+        if hoi_hard_thresh is None:
+            hoi_hard_thresh = getattr(args, 'distance_threshold', None)
+
+        if self.hoi_mode != 'none':
+            use_geom_bias = self.hoi_mode in ['bias', 'penalty']
+            use_logit_penalty = self.hoi_mode == 'penalty'
+            hard_mask_thresh = hoi_hard_thresh if self.hoi_mode == 'hard_mask' else None
+            self.frame_graph = FrameHOIGraph(
+                self.hidden_dim,
+                nhead=hoi_nheads,
+                dropout=args.drop_rate,
+                topk=hoi_topk,
+                use_geom_bias=use_geom_bias,
+                use_logit_penalty=use_logit_penalty,
+                hard_mask_thresh=hard_mask_thresh,
+            )
+        else:
+            self.frame_graph = None
         self.temporal_encoder = TemporalEncoder(self.hidden_dim, nhead=args.gar_nheads, 
                                                 num_layers=args.temporal_layers,
                                                 tcn_kernel_size=args.tcn_kernel_size,
@@ -57,18 +76,23 @@ class GADTR(nn.Module):
         self.actor_time_pool = nn.Linear(self.hidden_dim, 1)
         self.group_time_pool = nn.Linear(self.hidden_dim, 1)
         
-        # Distance mask threshold
-        self.distance_threshold = args.distance_threshold
+        # Distance mask threshold (kept for backward compatibility)
+        self.distance_threshold = getattr(args, 'distance_threshold', None)
 
         # Membership prediction heads
         self.actor_match_emb = nn.Linear(self.hidden_dim, self.hidden_dim)
         self.group_match_emb = nn.Linear(self.hidden_dim, self.hidden_dim)
 
-        self.use_mae = getattr(args, 'use_mae', False)
+        self.mae_fusion = getattr(args, 'mae_fusion', 'adaptive_two_branch')
+        self.use_mae = getattr(args, 'use_mae', False) and self.mae_fusion != 'none'
         if self.use_mae:
             mae_dim = getattr(args, 'mae_dim', 768)
-            print(f"Initializing VideoMAE Adapter with dim={mae_dim}...")
-            self.videomae_adapter = VideoMAEAdapter(global_dim=mae_dim, hidden_dim=self.hidden_dim)
+            print(f"Initializing VideoMAE Adapter with dim={mae_dim}, fusion={self.mae_fusion}...")
+            self.videomae_adapter = VideoMAEAdapter(
+                global_dim=mae_dim,
+                hidden_dim=self.hidden_dim,
+                fusion=self.mae_fusion,
+            )
         else:
             self.videomae_adapter = None
 
@@ -154,10 +178,11 @@ class GADTR(nn.Module):
         actor_features = actor_features + box_pos_emb
 
         # frame-level HOI mapping on actor tokens
-        actor_graph_in = actor_features.reshape(bs * t, n, self.hidden_dim)
-        boxes_for_graph = boxes_norm.reshape(bs * t, n, 4)
-        actor_graph_out, _ = self.frame_graph(actor_graph_in, boxes_for_graph, attn_mask=actor_mask)
-        actor_features = actor_graph_out.reshape(bs, t, n, self.hidden_dim)
+        if self.frame_graph is not None:
+            actor_graph_in = actor_features.reshape(bs * t, n, self.hidden_dim)
+            boxes_for_graph = boxes_norm.reshape(bs * t, n, 4)
+            actor_graph_out, _ = self.frame_graph(actor_graph_in, boxes_for_graph, attn_mask=actor_mask)
+            actor_features = actor_graph_out.reshape(bs, t, n, self.hidden_dim)
 
         # group transformer
         hs, actor_att, feature_att = self.group_transformer(src, actor_mask, group_dummy_mask,
