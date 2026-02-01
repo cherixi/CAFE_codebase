@@ -75,6 +75,13 @@ def normalize_box(x1, y1, x2, y2, w_img, h_img):
         h / h_img
     ]
 
+def clamp_box(x1, y1, x2, y2, w_img, h_img):
+    x1 = max(0.0, min(w_img, x1))
+    y1 = max(0.0, min(h_img, y1))
+    x2 = max(0.0, min(w_img, x2))
+    y2 = max(0.0, min(h_img, y2))
+    return x1, y1, x2, y2
+
 def convert_socialcad_to_cafe():
     print(f"Starting conversion...")
     print(f"Images Root: {IMAGES_ROOT}")
@@ -252,10 +259,14 @@ def convert_socialcad_to_cafe():
             for entity in frame_data:
                 pid = float(entity['track_id'])
                 x1, y1, x2, y2 = entity['bbox']
-                norm_box = normalize_box(x1, y1, x2, y2, IMG_WIDTH, IMG_HEIGHT)
-                
-                # Append [pid, cx, cy, w, h]
-                clip_tracks.append([pid] + norm_box)
+                x1, y1, x2, y2 = clamp_box(x1, y1, x2, y2, IMG_WIDTH, IMG_HEIGHT)
+                nx1 = x1 / IMG_WIDTH
+                ny1 = y1 / IMG_HEIGHT
+                nx2 = x2 / IMG_WIDTH
+                ny2 = y2 / IMG_HEIGHT
+
+                # Append [pid, x1, y1, x2, y2] (normalized xyxy)
+                clip_tracks.append([pid, nx1, ny1, nx2, ny2])
                 
                 # --- GENERATE GT_TRACKS.TXT LINE ---
                 # Format from CAFE eval: 
@@ -285,8 +296,8 @@ def convert_socialcad_to_cafe():
                 except ValueError:
                     s_id_int = -1 
 
-                # x1 y1 x2 y2 are raw pixels
-                txt_line = f"{s_id_int} {clip_id} 5 {int(x1)} {int(y1)} {int(x2)} {int(y2)} {gid} {cafe_act_id}\n"
+                # x1 y1 x2 y2 are raw pixels (after clamp)
+                txt_line = f"{s_id_int} {clip_id} 5 {int(x1)} {int(y1)} {int(x2)} {int(y2)} {gid} {cafe_act_id + 1}\n"
                 all_tracks_txt_lines.append(txt_line)
                 # -----------------------------------
             
@@ -453,11 +464,8 @@ def create_ann_json(frame_entities):
             
         # Structure for figure
         
-        # [FIX 3] Clip coordinates to 0
-        b_x1 = max(0.0, bbox[0])
-        b_y1 = max(0.0, bbox[1])
-        b_x2 = max(0.0, bbox[2])
-        b_y2 = max(0.0, bbox[3])
+        # Clip coordinates to image bounds
+        b_x1, b_y1, b_x2, b_y2 = clamp_box(bbox[0], bbox[1], bbox[2], bbox[3], IMG_WIDTH, IMG_HEIGHT)
         
         figure = {
             "id": tid,
