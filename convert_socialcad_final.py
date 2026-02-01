@@ -18,7 +18,7 @@ IMAGES_ROOT = r"D:\ActivityDataset"
 # Path containing annotation files (e.g. .../1/annotations.txt or .../1.txt)
 ANNOTATIONS_ROOT = r"D:\Social-human-activity-understanding-and-grouping-master\Social-human-activity-understanding-and-grouping-master\social_CAD\social_CAD"
 
-DEST_ROOT = r"D:\cafe_social_cad"
+DEST_ROOT = r"D:\cafe_social_cad_nopkl"
 IMG_WIDTH = 720
 IMG_HEIGHT = 480
 
@@ -109,6 +109,8 @@ def convert_socialcad_to_cafe():
     
     # Placeholder for collecting all clips metadata for gt_tracks.txt
     all_tracks_txt_lines = []
+    # Normalized tracks for dataloader (text)
+    tracks_norm_lines = []
 
     for seq_id in tqdm(ALL_SEQS, desc="Processing Sequences"):
         # -----------------------------------------------------------
@@ -299,6 +301,15 @@ def convert_socialcad_to_cafe():
                 # x1 y1 x2 y2 are raw pixels (after clamp)
                 txt_line = f"{s_id_int} {clip_id} 5 {int(x1)} {int(y1)} {int(x2)} {int(y2)} {gid} {cafe_act_id + 1}\n"
                 all_tracks_txt_lines.append(txt_line)
+
+                # Normalized tracklets for dataloader: vid cid fid track_id x1 y1 x2 y2
+                try:
+                    c_id_int = int(clip_id)
+                except ValueError:
+                    c_id_int = -1
+                tracks_norm_lines.append(
+                    f"{s_id_int} {c_id_int} 5 {int(pid)} {nx1:.6f} {ny1:.6f} {nx2:.6f} {ny2:.6f}\n"
+                )
                 # -----------------------------------
             
             if len(clip_tracks) > 0:
@@ -316,6 +327,10 @@ def convert_socialcad_to_cafe():
     print(f"Saving gt_tracks.txt with {len(all_tracks_txt_lines)} lines...")
     with open(os.path.join(DEST_ROOT, 'gt_tracks.txt'), 'w') as f:
         f.writelines(all_tracks_txt_lines)
+
+    print(f"Saving tracks_norm.txt with {len(tracks_norm_lines)} lines...")
+    with open(os.path.join(DEST_ROOT, 'tracks_norm.txt'), 'w') as f:
+        f.writelines(tracks_norm_lines)
         
     print("Done!")
 
