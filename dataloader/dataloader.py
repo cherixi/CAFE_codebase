@@ -6,6 +6,7 @@ from .cafe import *
 
 import pickle
 import os
+import numpy as np
 
 TRAIN_CAFE_P = ['1', '2', '3', '4', '9', '10', '11', '12', '17', '18', '19', '20', '21', '22', '23', '24']
 VAL_CAFE_P = ['13', '14', '15', '16']
@@ -85,8 +86,13 @@ def read_dataset(args):
         test_frames = cafe_all_frames(test_data)
         print(f"    Loaded {len(test_frames)} test clips")
 
-        print(f"    Loading actor tracklets from: {os.path.join(data_path, 'gt_tracks.pkl')}")
-        all_tracks = pickle.load(open(os.path.join(data_path, 'gt_tracks.pkl'), 'rb'))
+        tracks_norm_path = os.path.join(data_path, 'tracks_norm.txt')
+        if os.path.exists(tracks_norm_path):
+            print(f"    Loading actor tracklets from: {tracks_norm_path}")
+            all_tracks = load_tracks_txt(tracks_norm_path)
+        else:
+            print(f"    Loading actor tracklets from: {os.path.join(data_path, 'gt_tracks.pkl')}")
+            all_tracks = pickle.load(open(os.path.join(data_path, 'gt_tracks.pkl'), 'rb'))
 
         print(f"    Creating dataset objects...")
         train_set = CafeDataset(train_frames, train_data, all_tracks, data_path, args, is_training=True)
@@ -98,3 +104,38 @@ def read_dataset(args):
     print("%d train samples and %d test samples" % (len(train_frames), len(test_frames)))
 
     return train_set, test_set
+
+
+def load_tracks_txt(path):
+    """
+    tracks_norm.txt format:
+    vid cid fid track_id x1 y1 x2 y2 (coords normalized 0~1)
+    """
+    tracks = {}
+    with open(path, "r") as f:
+        for line in f:
+            parts = line.strip().split()
+            if len(parts) < 8:
+                continue
+            try:
+                vid = int(parts[0])
+                cid = int(parts[1])
+                fid = int(parts[2])
+                tid = int(float(parts[3]))
+                x1 = float(parts[4])
+                y1 = float(parts[5])
+                x2 = float(parts[6])
+                y2 = float(parts[7])
+            except ValueError:
+                continue
+            key = (vid, cid)
+            if key not in tracks:
+                tracks[key] = {}
+            if fid not in tracks[key]:
+                tracks[key][fid] = []
+            tracks[key][fid].append([tid, x1, y1, x2, y2])
+
+    for key in tracks:
+        for fid in tracks[key]:
+            tracks[key][fid] = np.array(tracks[key][fid], dtype=np.float32)
+    return tracks
