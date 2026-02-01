@@ -72,9 +72,9 @@ def read_dataset(args):
         print(f"    Data path: {data_path}")
 
         # Social-CAD Splits (1-44 total)
-        # Using 1-34 for Train, 35-44 for Test
-        TRAIN_SEQS = [str(i) for i in range(1, 35)]
-        TEST_SEQS = [str(i) for i in range(35, 45)]
+        # Using 1-36 for Train, 37-44 for Test
+        TRAIN_SEQS = [str(i) for i in range(1, 37)]
+        TEST_SEQS = [str(i) for i in range(37, 45)]
 
         print(f"    Loading training data ({len(TRAIN_SEQS)} seqs)")
         train_data = cafe_read_annotations(data_path, TRAIN_SEQS, args.num_class)

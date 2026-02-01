@@ -80,9 +80,9 @@ parser.add_argument('--eos_coef', default=1, type=float,
 
 # Loss coefficients (Group)
 parser.add_argument('--group_eos_coef', default=1, type=float)
-parser.add_argument('--group_ce_loss_coef', default=1, type=float)
-parser.add_argument('--group_code_loss_coef', default=5, type=float)
-parser.add_argument('--consistency_loss_coef', default=2, type=float)
+parser.add_argument('--group_ce_loss_coef', default=0, type=float)
+parser.add_argument('--group_code_loss_coef', default=0, type=float)
+parser.add_argument('--consistency_loss_coef', default=0, type=float)
 
 # Matcher (Group)
 parser.add_argument('--set_cost_group_class', default=1, type=float,
