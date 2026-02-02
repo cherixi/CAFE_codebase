@@ -241,6 +241,31 @@ def convert_socialcad_to_cafe():
 
             # Generate ann.json
             frame_data = seq_data[t]
+
+            # Filter out invalid/solo groups (keep only groups with size > 1)
+            group_counts = {}
+            for ent in frame_data:
+                gid = ent['group_id']
+                if gid <= 0:
+                    continue
+                group_counts[gid] = group_counts.get(gid, 0) + 1
+
+            frame_data = [ent for ent in frame_data if ent['group_id'] > 0 and group_counts.get(ent['group_id'], 0) > 1]
+            if len(frame_data) == 0:
+                # no valid group members in this clip
+                if os.path.exists(clip_dir):
+                    shutil.rmtree(clip_dir)
+                continue
+
+            # Remap group ids to consecutive 1..K
+            gid_list = sorted({ent['group_id'] for ent in frame_data})
+            gid_map = {gid: i + 1 for i, gid in enumerate(gid_list)}
+
+            # Remap track ids to consecutive 1..N (num_frame=1, so continuity across frames not needed)
+            for new_tid, ent in enumerate(frame_data, start=1):
+                ent['track_id'] = new_tid
+                ent['group_id'] = gid_map[ent['group_id']]
+
             ann_json = create_ann_json(frame_data)
             
             with open(os.path.join(clip_dir, 'ann.json'), 'w') as f:
@@ -285,12 +310,8 @@ def convert_socialcad_to_cafe():
                 cafe_act_id = NAME_TO_CAFE_ID.get(act_str, 7) # Default to 7 (No) if unknown, or 0 (NA)
                 
                 
-                gid = entity['group_id']
-                
-                # CAFE convention: Individual = -1, Groups = 0, 1, 2...
-                # Updated logic: if group size <= 1, FORCE gid to -1 for txt output
-                if group_counts.get(gid, 0) <= 1:
-                    gid = -1
+                # groups are remapped to 1..K; output 0-based group id for txt
+                gid = entity['group_id'] - 1
                 
                 # Ensure seq_id is int for txt format
                 try:
@@ -401,8 +422,7 @@ def load_socialcad_annotations(file_path):
                 
                 track_id = int(parts[7])
                 
-                group_id_raw = int(parts[8])
-                group_id = group_id_raw - 1 if group_id_raw > 0 else 0 
+                group_id = int(parts[8])
                 
                 if frame_idx not in data_map:
                     data_map[frame_idx] = []
@@ -467,15 +487,11 @@ def create_ann_json(frame_entities):
         # User requested "Group ID start from 0".
         # In current logic: group_counts keys are now 0, 1, 2...
         
-        # Check if this group ID has > 1 member
-        if group_counts[gid] > 1:
-            # [FIX 2] User requested JSON group label start from 1
-            # Current gid is 0-based, so we output group{gid+1}
-            label = f"group{gid + 1}"
-        else:
-            # If it's a single person group, CAFE treats as individual
-            label = "individual"
-            # And for gt_tracks.txt logic later, we might want to set gid to -1
+        # Only keep groups with size > 1 (others are already filtered out)
+        if group_counts.get(gid, 0) <= 1:
+            continue
+        # group_id is already remapped to 1..K
+        label = f"group{gid}"
             
         # Structure for figure
         
