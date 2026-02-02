@@ -9,6 +9,10 @@ cafe_checkpoints.zip
 # 忽略gt_tracks.txt
 gt_tracks.txt
 gt_tracks_socialcad.txt
+gt_tracks_socialcad_old.txt
+gt_tracks_socialcad_old1.txt
+
+
 
 # 忽略videomae_features文件夹
 videomae_features/
