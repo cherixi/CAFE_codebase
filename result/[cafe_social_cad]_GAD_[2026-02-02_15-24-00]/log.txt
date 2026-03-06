@@ -1,0 +1,255 @@
+----------------------------------------------------------------
+VideoMAE Enhancement: ENABLED
+Version: V2 (Dim: 1408)
+Feature Path: ./videomae_features_giant_socialcad
+----------------------------------------------------------------
+--------------------Number of parameters--------------------
+Total parameters: 26,474,711
+Trainable parameters: 26,474,711
+Frozen parameters: 0
+Frozen ratio: 0.0%
+--------------------Learning Rate Configuration--------------------
+Head learning rate: 1e-05
+Backbone learning rate: 1.0000000000000002e-06 (scale: 0.1)
+Backbone params count: 11,166,912
+Head params count: 15,307,799
+----- Train at epoch #1
+Loss: 1.9816
+Group class error: 25.30
+----- Test at epoch #1
+Loss: 2.2402
+Group class error: 68.01
+social accuracy: 0.0475
+Updated summary and curves at epoch 1
+----- Train at epoch #2
+Loss: 1.4545
+Group class error: 22.14
+----- Test at epoch #2
+Loss: 2.0705
+Group class error: 57.02
+social accuracy: 0.2293
+Updated summary and curves at epoch 2
+----- Train at epoch #3
+Loss: 0.8381
+Group class error: 24.11
+----- Test at epoch #3
+Loss: 2.3108
+Group class error: 50.64
+social accuracy: 0.2988
+Updated summary and curves at epoch 3
+----- Train at epoch #4
+Loss: 0.4650
+Group class error: 28.23
+----- Test at epoch #4
+Loss: 3.5196
+Group class error: 50.82
+social accuracy: 0.2957
+Updated summary and curves at epoch 4
+----- Train at epoch #5
+Loss: 0.2733
+Group class error: 31.35
+----- Test at epoch #5
+Loss: 4.2190
+Group class error: 50.99
+social accuracy: 0.2508
+Updated summary and curves at epoch 5
+----- Train at epoch #6
+Loss: 0.2062
+Group class error: 35.09
+----- Test at epoch #6
+Loss: 3.9077
+Group class error: 52.16
+social accuracy: 0.3039
+Updated summary and curves at epoch 6
+----- Train at epoch #7
+Loss: 0.1353
+Group class error: 38.13
+----- Test at epoch #7
+Loss: 4.5072
+Group class error: 47.25
+social accuracy: 0.2707
+Updated summary and curves at epoch 7
+----- Train at epoch #8
+Loss: 0.1262
+Group class error: 39.28
+----- Test at epoch #8
+Loss: 4.7060
+Group class error: 50.09
+social accuracy: 0.2176
+Updated summary and curves at epoch 8
+----- Train at epoch #9
+Loss: 0.1018
+Group class error: 43.11
+----- Test at epoch #9
+Loss: 4.8789
+Group class error: 45.42
+social accuracy: 0.2237
+Updated summary and curves at epoch 9
+----- Train at epoch #10
+Loss: 0.0919
+Group class error: 42.41
+----- Test at epoch #10
+Loss: 5.2203
+Group class error: 46.44
+social accuracy: 0.2441
+Updated summary and curves at epoch 10
+----- Train at epoch #11
+Loss: 0.0810
+Group class error: 42.52
+----- Test at epoch #11
+Loss: 4.9003
+Group class error: 51.90
+social accuracy: 0.2426
+Updated summary and curves at epoch 11
+----- Train at epoch #12
+Loss: 0.0683
+Group class error: 43.51
+----- Test at epoch #12
+Loss: 4.4707
+Group class error: 48.04
+social accuracy: 0.2855
+Updated summary and curves at epoch 12
+----- Train at epoch #13
+Loss: 0.0543
+Group class error: 45.90
+----- Test at epoch #13
+Loss: 5.1309
+Group class error: 50.27
+social accuracy: 0.2707
+Updated summary and curves at epoch 13
+----- Train at epoch #14
+Loss: 0.0520
+Group class error: 45.96
+----- Test at epoch #14
+Loss: 5.0382
+Group class error: 50.89
+social accuracy: 0.2661
+Updated summary and curves at epoch 14
+----- Train at epoch #15
+Loss: 0.0502
+Group class error: 47.11
+----- Test at epoch #15
+Loss: 3.0688
+Group class error: 52.81
+social accuracy: 0.4183
+Updated summary and curves at epoch 15
+----- Train at epoch #16
+Loss: 0.0443
+Group class error: 48.77
+----- Test at epoch #16
+Loss: 4.0634
+Group class error: 51.56
+social accuracy: 0.4019
+Updated summary and curves at epoch 16
+----- Train at epoch #17
+Loss: 0.0414
+Group class error: 48.87
+----- Test at epoch #17
+Loss: 3.9354
+Group class error: 50.41
+social accuracy: 0.4142
+Updated summary and curves at epoch 17
+----- Train at epoch #18
+Loss: 0.0369
+Group class error: 49.52
+----- Test at epoch #18
+Loss: 4.7875
+Group class error: 49.78
+social accuracy: 0.3524
+Updated summary and curves at epoch 18
+----- Train at epoch #19
+Loss: 0.0298
+Group class error: 49.27
+----- Test at epoch #19
+Loss: 4.0145
+Group class error: 56.02
+social accuracy: 0.4183
+Updated summary and curves at epoch 19
+----- Train at epoch #20
+Loss: 0.0275
+Group class error: 52.76
+----- Test at epoch #20
+Loss: 4.2080
+Group class error: 53.35
+social accuracy: 0.3539
+Updated summary and curves at epoch 20
+----- Train at epoch #21
+Loss: 0.0233
+Group class error: 50.72
+----- Test at epoch #21
+Loss: 4.4670
+Group class error: 52.22
+social accuracy: 0.3294
+Updated summary and curves at epoch 21
+----- Train at epoch #22
+Loss: 0.0208
+Group class error: 49.81
+----- Test at epoch #22
+Loss: 4.9755
+Group class error: 52.24
+social accuracy: 0.3662
+Updated summary and curves at epoch 22
+----- Train at epoch #23
+Loss: 0.0261
+Group class error: 51.67
+----- Test at epoch #23
+Loss: 6.1252
+Group class error: 50.22
+social accuracy: 0.2462
+Updated summary and curves at epoch 23
+----- Train at epoch #24
+Loss: 0.0198
+Group class error: 51.72
+----- Test at epoch #24
+Loss: 4.3743
+Group class error: 51.24
+social accuracy: 0.3698
+Updated summary and curves at epoch 24
+----- Train at epoch #25
+Loss: 0.0199
+Group class error: 50.90
+----- Test at epoch #25
+Loss: 5.0924
+Group class error: 53.07
+social accuracy: 0.2957
+Updated summary and curves at epoch 25
+----- Train at epoch #26
+Loss: 0.0201
+Group class error: 52.63
+----- Test at epoch #26
+Loss: 4.6402
+Group class error: 52.54
+social accuracy: 0.3565
+Updated summary and curves at epoch 26
+----- Train at epoch #27
+Loss: 0.0176
+Group class error: 47.59
+----- Test at epoch #27
+Loss: 4.8997
+Group class error: 51.70
+social accuracy: 0.3565
+Updated summary and curves at epoch 27
+----- Train at epoch #28
+Loss: 0.0132
+Group class error: 50.39
+----- Test at epoch #28
+Loss: 5.0716
+Group class error: 55.18
+social accuracy: 0.3095
+Updated summary and curves at epoch 28
+----- Train at epoch #29
+Loss: 0.0149
+Group class error: 51.47
+----- Test at epoch #29
+Loss: 4.8099
+Group class error: 51.64
+social accuracy: 0.3417
+Updated summary and curves at epoch 29
+----- Train at epoch #30
+Loss: 0.0127
+Group class error: 49.97
+----- Test at epoch #30
+Loss: 4.8920
+Group class error: 55.75
+social accuracy: 0.3299
+Updated summary and curves at epoch 30
