@@ -1,0 +1,44 @@
+----------------------------------------------------------------
+VideoMAE Enhancement: DISABLED
+----------------------------------------------------------------
+--------------------Number of parameters--------------------
+Total parameters: 102,439,440
+Trainable parameters: 30,039,312
+Frozen parameters: 72,400,128
+Frozen ratio: 70.7%
+--------------------Learning Rate Configuration--------------------
+Head learning rate: 1e-05
+Backbone learning rate: 1.0000000000000002e-06 (scale: 0.1)
+Backbone params count: 14,180,352
+Head params count: 15,858,960
+----- Train at epoch #1
+Loss: 2.1379
+Group class error: 78.50
+----- Test at epoch #1
+Loss: 2.0093
+Group class error: 68.21
+group mAP at 1.0: 0.17
+group mAP at 0.5: 1.98
+outlier mIoU: 60.68
+Updated summary and curves at epoch 1
+----- Train at epoch #2
+Loss: 1.1348
+Group class error: 35.40
+----- Test at epoch #2
+Loss: 2.1680
+Group class error: 41.27
+group mAP at 1.0: 7.19
+group mAP at 0.5: 23.78
+outlier mIoU: 64.91
+Updated summary and curves at epoch 2
+----- Train at epoch #3
+Loss: 0.8539
+Group class error: 21.89
+----- Test at epoch #3
+Loss: 1.6676
+Group class error: 44.70
+group mAP at 1.0: 9.14
+group mAP at 0.5: 26.52
+outlier mIoU: 66.61
+Updated summary and curves at epoch 3
+----- Train at epoch #4
