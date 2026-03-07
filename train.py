@@ -106,6 +106,8 @@ parser.add_argument('--set_cost_membership', default=1, type=float,
 parser.add_argument('--random_seed', default=1, type=int, help='random seed for reproduction')
 parser.add_argument('--epochs', default=30, type=int, help='Max epochs')
 parser.add_argument('--test_freq', default=1, type=int, help='print frequency')
+parser.add_argument('--skip_test_epochs', default=8, type=int,
+                    help='skip validation for the first N epochs to save time')
 parser.add_argument('--batch', default=16, type=int, help='Batch size')
 parser.add_argument('--test_batch', default=16, type=int, help='Test batch size')
 parser.add_argument('--lr', default=1e-5, type=float, help='Initial learning rate')
@@ -314,7 +316,7 @@ def main():
         # record train metrics
         history = experiment.update_history(history, "train", epoch, train_log)
 
-        if epoch % args.test_freq == 0:
+        if epoch > args.skip_test_epochs and epoch % args.test_freq == 0:
             print_log(save_path, '----- %s at epoch #%d' % ("Test", epoch))
             test_log, result = validate(test_loader, model, criterion, metrics, epoch)
             print_log(save_path, 'Loss: %.4f' % (test_log['loss']))
