@@ -78,6 +78,9 @@ parser.add_argument('--hoi_hard_thresh', default=None, type=float,
 parser.add_argument('--temporal_layers', default=3, type=int, help='number of temporal attention layers')
 parser.add_argument('--tcn_kernel_size', default=3, type=int, help='kernel size for TCN')
 parser.add_argument('--tcn_dropout', default=0.1, type=float, help='dropout for TCN')
+parser.add_argument('--temporal_agg_mode', default='learned_pool', type=str,
+                    choices=['learned_pool', 'frame_mean_main'],
+                    help='temporal aggregation mode: learned pooling (default) or main-style frame mean ablation')
 
 # Loss option
 parser.add_argument('--temperature', default=0.2, type=float, help='consistency loss temperature')

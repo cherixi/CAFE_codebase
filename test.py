@@ -65,6 +65,9 @@ parser.add_argument('--hoi_mode', default='penalty', type=str,
                     help='HOI graph ablation mode')
 parser.add_argument('--hoi_hard_thresh', default=None, type=float,
                     help='distance threshold for hard_mask mode (if None, use distance_threshold)')
+parser.add_argument('--temporal_agg_mode', default='learned_pool', type=str,
+                    choices=['learned_pool', 'frame_mean_main'],
+                    help='temporal aggregation mode: learned pooling (default) or main-style frame mean ablation')
 
 # Loss option
 parser.add_argument('--temperature', default=0.2, type=float, help='consistency loss temperature')
