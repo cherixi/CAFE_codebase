@@ -6,6 +6,7 @@ from .cafe import *
 
 import pickle
 import os
+import json
 
 TRAIN_CAFE_P = ['1', '2', '3', '4', '9', '10', '11', '12', '17', '18', '19', '20', '21', '22', '23', '24']
 VAL_CAFE_P = ['13', '14', '15', '16']
@@ -14,6 +15,29 @@ TEST_CAFE_P = ['5', '6', '7', '8']
 TRAIN_CAFE_V = ['1', '2', '5', '6', '9', '10', '13', '14', '17', '18', '21', '22']
 VAL_CAFE_V = ['3', '7', '11', '15', '19', '23']
 TEST_CAFE_V = ['4', '8', '12', '16', '20', '24']
+
+
+def _load_tracks_from_json(json_path):
+    with open(json_path, 'r', encoding='utf-8') as f:
+        payload = json.load(f)
+
+    tracks = {}
+    for clip in payload.get('tracks', []):
+        vid = int(clip['vid'])
+        cid = int(clip['cid'])
+        frames = clip.get('frames', [])
+        # Keep the same indexing behavior as pkl: tracks[(vid, cid)][fid]
+        if len(frames) == 0:
+            frame_tracks = []
+        else:
+            max_fid = max(int(frame.get('fid', idx)) for idx, frame in enumerate(frames))
+            frame_tracks = [[] for _ in range(max_fid + 1)]
+            for idx, frame in enumerate(frames):
+                fid = int(frame.get('fid', idx))
+                frame_tracks[fid] = frame.get('tracks', [])
+        tracks[(vid, cid)] = frame_tracks
+
+    return tracks
 
 
 def read_dataset(args):
@@ -56,9 +80,17 @@ def read_dataset(args):
             print(f"    Loaded {len(test_frames)} test clips")
 
         # actor tracklets for all frames
-        print(f"    Loading actor tracklets from: {os.path.join(data_path, 'gt_tracks.pkl')}")
-        all_tracks = pickle.load(open(os.path.join(data_path, 'gt_tracks.pkl'), 'rb'))
-        print(f"    Tracklets loaded")
+        tracks_json_path = os.path.join(data_path, 'gt_tracks.json')
+        tracks_pkl_path = os.path.join(data_path, 'gt_tracks.pkl')
+
+        if os.path.exists(tracks_json_path):
+            print(f"    Loading actor tracklets from: {tracks_json_path}")
+            all_tracks = _load_tracks_from_json(tracks_json_path)
+            print(f"    Tracklets loaded (json)")
+        else:
+            print(f"    Loading actor tracklets from: {tracks_pkl_path}")
+            all_tracks = pickle.load(open(tracks_pkl_path, 'rb'))
+            print(f"    Tracklets loaded (pkl)")
 
         print(f"    Creating dataset objects...")
         train_set = CafeDataset(train_frames, train_data, all_tracks, data_path, args, is_training=True)
