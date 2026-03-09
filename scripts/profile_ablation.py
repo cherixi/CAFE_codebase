@@ -3,12 +3,19 @@ import csv
 import itertools
 import json
 import math
+import os
+import sys
 import time
 from pathlib import Path
 from types import SimpleNamespace
 
 import torch
 from torch.profiler import profile, ProfilerActivity
+
+# Ensure project root is on PYTHONPATH when running as `python scripts/profile_ablation.py`
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
 
 from models.models import GADTR
 
