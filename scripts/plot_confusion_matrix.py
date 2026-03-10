@@ -110,7 +110,7 @@ def save_cm_csv(cm, labels, csv_path):
 def plot_cm(cm, labels, out_path, normalize=False, title="Group Confusion Matrix (IoU=0.5)"):
     if normalize:
         row_sum = cm.sum(axis=1, keepdims=True).astype(np.float64)
-        cm_vis = np.divide(cm, np.maximum(row_sum, 1.0))
+        cm_vis = np.divide(cm, np.maximum(row_sum, 1.0)) * 100.0
     else:
         cm_vis = cm.astype(np.float64)
 
@@ -135,7 +135,7 @@ def plot_cm(cm, labels, out_path, normalize=False, title="Group Confusion Matrix
     for i in range(cm.shape[0]):
         for j in range(cm.shape[1]):
             if normalize:
-                text_val = f"{cm[i, j]}\n({cm_vis[i, j]:.2f})"
+                text_val = f"{cm_vis[i, j]:.2f}%"
             else:
                 text_val = str(cm[i, j])
             ax.text(
@@ -161,7 +161,8 @@ def main():
     parser.add_argument("--eval_type", default="gt_base", choices=["gt_base", "detect_base"], type=str)
     parser.add_argument("--iou_thresh", default=0.5, type=float, help="Group IoU threshold (default: 0.5)")
     parser.add_argument("--min_members", default=2, type=int, help="Minimum group size to evaluate")
-    parser.add_argument("--exclude_bg", action="store_true", help="Exclude background row/column")
+    parser.add_argument("--outlier_id", default=None, type=int,
+                        help="Outlier class id. Default: max(label ids)+1")
     parser.add_argument("--normalize", action="store_true", help="Show normalized matrix values in plot")
     parser.add_argument("--out_dir", default="", type=str, help="Output folder (default: pred txt folder)")
     args = parser.parse_args()
@@ -182,7 +183,12 @@ def main():
     with open(args.labelmap, "r", encoding="utf-8") as f:
         categories, class_ids = read_labelmap(f)
     class_ids = sorted(class_ids)
+    outlier_id = args.outlier_id if args.outlier_id is not None else (max(class_ids) + 1)
+    if outlier_id not in class_ids:
+        class_ids.append(outlier_id)
+    class_ids = sorted(class_ids)
     id_to_name = {int(c["id"]): c["name"] for c in categories}
+    id_to_name[outlier_id] = id_to_name.get(outlier_id, "Outlier")
 
     with open(args.groundtruth, "r", encoding="utf-8") as f:
         gt_boxes, gt_g_labels, gt_act_labels, _, gt_g_scores = read_text_file(f, args.eval_type, mode="gt")
@@ -203,15 +209,13 @@ def main():
         pred_groups_ids, pred_groups_activity, pred_groups_scores, class_ids, min_members=args.min_members
     )
 
-    include_bg = not args.exclude_bg
+    # As requested: no BG row/column in confusion matrix.
+    include_bg = False
     cm = match_groups_and_build_cm(
         gt_by_clip, pred_by_clip, class_ids, iou_thresh=args.iou_thresh, include_bg=include_bg
     )
 
     labels = [id_to_name[cid] for cid in class_ids]
-    if include_bg:
-        labels.append("BG")
-
     npy_path = out_dir / "confusion_matrix_iou0.5.npy"
     csv_path = out_dir / "confusion_matrix_iou0.5.csv"
     png_path = out_dir / "confusion_matrix_iou0.5.png"
