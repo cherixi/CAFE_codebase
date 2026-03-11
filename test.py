@@ -18,6 +18,7 @@ import util.misc as utils
 import util.logger as loggers
 from dataloader.dataloader import read_dataset
 import evaluation.cafe_eval as evaluation
+from util.box_noise import apply_box_noise
 
 parser = argparse.ArgumentParser(description='Group Activity Detection train code', add_help=False)
 
@@ -25,7 +26,7 @@ parser = argparse.ArgumentParser(description='Group Activity Detection train cod
 parser.add_argument('--dataset', default='cafe', type=str, help='dataset name')
 parser.add_argument('--val_mode', action='store_true')
 parser.add_argument('--split', default='place', type=str, help='dataset split. place or view')
-parser.add_argument('--data_path', default='../Dataset/', type=str, help='data path')
+parser.add_argument('--data_path', default='/home/ziyang/aixi/Dataset/Cafe_Dataset/Cafe_Dataset/Dataset/', type=str, help='data path')
 parser.add_argument('--image_width', default=1120, type=int, help='Image width to resize (1120 for DINOv2, 1280 for ResNet)')
 parser.add_argument('--image_height', default=630, type=int, help='Image height to resize (630 for DINOv2, 720 for ResNet)')
 parser.add_argument('--random_sampling', action='store_true', help='random sampling strategy')
@@ -43,6 +44,7 @@ parser.add_argument('--backbone', default='resnet18', type=str, help='feature ex
 parser.add_argument('--dilation', action='store_true', help='use dilation or not')
 parser.add_argument('--frozen_batch_norm', action='store_true', help='use frozen batch normalization')
 parser.add_argument('--freeze_backbone', action='store_true', help='freeze backbone parameters (for DINOv2)')
+parser.add_argument('--unfreeze_blocks', default=0, type=int, help='number of last transformer blocks to unfreeze (for DINOv2 partial finetuning)')
 parser.add_argument('--hidden_dim', default=256, type=int, help='transformer channel dimension')
 
 # RoI Align parameters
@@ -68,6 +70,26 @@ parser.add_argument('--hoi_hard_thresh', default=None, type=float,
 parser.add_argument('--temporal_agg_mode', default='learned_pool', type=str,
                     choices=['learned_pool', 'frame_mean_main'],
                     help='temporal aggregation mode: learned pooling (default) or main-style frame mean ablation')
+parser.add_argument('--temporal_layers', default=3, type=int, help='number of temporal attention layers')
+parser.add_argument('--tcn_kernel_size', default=3, type=int, help='kernel size for TCN')
+parser.add_argument('--tcn_dropout', default=0.1, type=float, help='dropout for TCN')
+
+# Box noise ablation
+parser.add_argument('--box_noise_policy', default='none', type=str,
+                    choices=['none', 'infer_only', 'train_and_infer'],
+                    help='box noise policy: none / infer_only / train_and_infer')
+parser.add_argument('--box_noise_seed', default=1, type=int,
+                    help='base seed for deterministic box noise sampling')
+parser.add_argument('--box_noise_center_std', default=0.10, type=float,
+                    help='center offset noise std, relative to box size')
+parser.add_argument('--box_noise_scale_std', default=0.08, type=float,
+                    help='log-scale noise std for box size')
+parser.add_argument('--box_noise_aspect_std', default=0.08, type=float,
+                    help='log-aspect-ratio noise std')
+parser.add_argument('--box_noise_min_size', default=1e-4, type=float,
+                    help='minimum normalized box size after noise')
+parser.add_argument('--box_noise_max_size', default=1.0, type=float,
+                    help='maximum normalized box size after noise')
 
 # Loss option
 parser.add_argument('--temperature', default=0.2, type=float, help='consistency loss temperature')
@@ -163,11 +185,18 @@ def main():
     _, test_set = read_dataset(args)
     print(f"    Dataset loaded: {len(test_set)} test samples")
     
-    sampler_test = data.RandomSampler(test_set)
+    if args.distributed:
+        sampler_test = data.DistributedSampler(test_set, shuffle=False)
+    else:
+        sampler_test = data.RandomSampler(test_set)
 
     print("[3/6] Creating data loader...")
     test_loader = data.DataLoader(test_set, args.test_batch, sampler=sampler_test, drop_last=False,
-                                  collate_fn=collate_fn, num_workers=4, pin_memory=True)
+                                  collate_fn=collate_fn,
+                                  num_workers=2,
+                                  pin_memory=False,
+                                  persistent_workers=True,
+                                  prefetch_factor=2)
     print(f"    Data loader created: {len(test_loader)} batches")
 
     print("[4/6] Building model...")
@@ -176,13 +205,8 @@ def main():
     print("    Model built and moved to GPU")
 
     print("[5/6] Loading model weights...")
-    pretrained_dict = torch.load(args.model_path, weights_only=False)['state_dict']
-    new_state_dict = model.state_dict()
-    for k, v in pretrained_dict.items():
-        if k in new_state_dict:
-            new_state_dict.update({k:v})
-
-    model.load_state_dict(new_state_dict)
+    checkpoint = torch.load(args.model_path)
+    model.load_state_dict(checkpoint['state_dict'])
     print(f"    Model weights loaded from {args.model_path}")
 
     print("[6/6] Initializing evaluation metrics...")
@@ -225,11 +249,16 @@ def validate(test_loader, model, criterion, metrics):
         images = images.cuda()  # [B, T, 3, H, W]
         targets = [{k: v.cuda() for k, v in t.items()} for t in targets]
 
-        boxes = torch.stack([t['boxes'] for t in targets])
+        clean_boxes = torch.stack([t['boxes'] for t in targets])
+        boxes = apply_box_noise(clean_boxes, infos, args, phase='infer')
         dummy_mask = torch.stack([t['actions'] == args.num_class + 1 for t in targets]).squeeze()
 
+        mae_feats = None
+        if args.use_mae and 'mae_feats' in targets[0]:
+             mae_feats = torch.stack([t['mae_feats'] for t in targets])
+
         # compute output
-        outputs = model(images, boxes, dummy_mask)
+        outputs = model(images, boxes, dummy_mask, mae_feats)
 
         loss_dict = criterion(outputs, targets)
         weight_dict = criterion.weight_dict
@@ -246,7 +275,8 @@ def validate(test_loader, model, criterion, metrics):
 
         metric_logger.update(group_class_error=loss_dict_reduced['group_class_error'])
 
-        make_txt(boxes, infos, outputs, name_to_vid, file_path)
+        # Keep original coordinates for evaluation alignment.
+        make_txt(clean_boxes, infos, outputs, name_to_vid, file_path)
 
     # gather the stats from all processes
     metric_logger.synchronize_between_processes()
