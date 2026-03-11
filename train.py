@@ -21,6 +21,7 @@ import util.logger as loggers
 from dataloader.dataloader import read_dataset
 import evaluation.cafe_eval as evaluation
 from util import experiment
+from util.box_noise import apply_box_noise
 
 parser = argparse.ArgumentParser(description='Group Activity Detection train code', add_help=False)
 
@@ -104,6 +105,23 @@ parser.add_argument('--weight_decay', default=1e-4, type=float, help='weight dec
 parser.add_argument('--drop_rate', default=0.1, type=float, help='Dropout rate')
 parser.add_argument('--gradient_clipping', action='store_true', help='use gradient clipping')
 parser.add_argument('--max_norm', default=1.0, type=float, help='gradient clipping max norm')
+
+# Box noise ablation
+parser.add_argument('--box_noise_policy', default='none', type=str,
+                    choices=['none', 'infer_only', 'train_and_infer'],
+                    help='box noise policy: none / infer_only / train_and_infer')
+parser.add_argument('--box_noise_seed', default=1, type=int,
+                    help='base seed for deterministic box noise sampling')
+parser.add_argument('--box_noise_center_std', default=0.10, type=float,
+                    help='center offset noise std, relative to box size')
+parser.add_argument('--box_noise_scale_std', default=0.08, type=float,
+                    help='log-scale noise std for box size')
+parser.add_argument('--box_noise_aspect_std', default=0.08, type=float,
+                    help='log-aspect-ratio noise std')
+parser.add_argument('--box_noise_min_size', default=1e-4, type=float,
+                    help='minimum normalized box size after noise')
+parser.add_argument('--box_noise_max_size', default=1.0, type=float,
+                    help='maximum normalized box size after noise')
 
 # GPU
 parser.add_argument('--device', default="0, 1", type=str, help='GPU device')
@@ -351,7 +369,8 @@ def train(train_loader, model, criterion, optimizer, epoch):
         images = images.cuda()  # [B, T, 3, H, W]
         targets = [{k: v.cuda() for k, v in t.items()} for t in targets]
 
-        boxes = torch.stack([t['boxes'] for t in targets])
+        clean_boxes = torch.stack([t['boxes'] for t in targets])
+        boxes = apply_box_noise(clean_boxes, infos, args, phase='train')
         dummy_mask = torch.stack([t['actions'] == args.num_class + 1 for t in targets]).squeeze()
         
         mae_feats = None
@@ -400,7 +419,7 @@ def train(train_loader, model, criterion, optimizer, epoch):
         metric_logger.update(lr=optimizer.param_groups[0]["lr"])
         
         # 显式删除大对象，帮助 GC 回收
-        del images, targets, boxes, outputs, loss, loss_dict
+        del images, targets, boxes, clean_boxes, outputs, loss, loss_dict
 
     metric_logger.synchronize_between_processes()
     print("Averaged stats:", metric_logger)
@@ -425,7 +444,8 @@ def validate(test_loader, model, criterion, metrics, epoch):
         images = images.cuda()  # [B, T, 3, H, W]
         targets = [{k: v.cuda() for k, v in t.items()} for t in targets]
 
-        boxes = torch.stack([t['boxes'] for t in targets])
+        clean_boxes = torch.stack([t['boxes'] for t in targets])
+        boxes = apply_box_noise(clean_boxes, infos, args, phase='infer')
         dummy_mask = torch.stack([t['actions'] == args.num_class + 1 for t in targets]).squeeze()
         
         mae_feats = None
@@ -450,7 +470,8 @@ def validate(test_loader, model, criterion, metrics, epoch):
 
         metric_logger.update(group_class_error=loss_dict_reduced['group_class_error'])
 
-        make_txt(boxes, infos, outputs, name_to_vid, file_path)
+        # Keep original coordinates for evaluation alignment.
+        make_txt(clean_boxes, infos, outputs, name_to_vid, file_path)
 
     # gather the stats from all processes
     metric_logger.synchronize_between_processes()

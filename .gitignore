@@ -23,3 +23,6 @@ videomae_features_giant/
 
 # 忽略.vscode文件夹
 .vscode/
+# Local SocialCAD assets
+evaluation/gt_tracks_socialcad.txt
+videomae_features_giant_socialcad/
