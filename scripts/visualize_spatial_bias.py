@@ -562,6 +562,10 @@ def main():
         np.save(out_dir / "geom_bias_all.npy", bias_all)
         np.save(out_dir / "geom_bias_dist.npy", dist_all)
         np.save(out_dir / "geom_bias_mean_over_heads.npy", bias_mean_all)
+        np.savez(
+            out_dir / "geom_bias_per_head.npz",
+            **{f"h{i}": arr for i, arr in enumerate(spatial_collector.bias_per_head)}
+        )
 
         summary["spatial_bias"] = {
             "total_pairs_seen_before_sampling": spatial_collector.total_seen,
@@ -605,6 +609,14 @@ def main():
         np.save(out_dir / "actor_gate_all.npy", gate_collector.actor_gate_all)
         np.save(out_dir / "group_gate_all.npy", gate_collector.group_gate_all)
         np.save(out_dir / "actor_group_gate_clip_pairs.npy", gate_collector.clip_actor_group_pairs)
+        np.savez(
+            out_dir / "actor_gate_by_pred_class.npz",
+            **{f"class_{i}": arr for i, arr in enumerate(gate_collector.actor_gate_by_class)}
+        )
+        np.savez(
+            out_dir / "group_gate_by_pred_class.npz",
+            **{f"class_{i}": arr for i, arr in enumerate(gate_collector.group_gate_by_class)}
+        )
 
         summary["gates"] = {
             "actor_gate_mean": float(np.mean(gate_collector.actor_gate_all)),
