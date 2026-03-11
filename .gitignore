@@ -8,3 +8,17 @@ __pycache__/
 cafe_checkpoints.zip
 # 忽略gt_tracks.txt
 gt_tracks.txt
+
+# Local workspace/editor artifacts
+.vscode/
+
+# Local experiment outputs
+outputs/
+
+# Local extracted VideoMAE features
+videomae_features/
+videomae_features_giant/
+videomae_features_giant_socialcad/
+
+# Local evaluation variant file
+evaluation/gt_tracks_socialcad.txt
