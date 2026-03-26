@@ -318,11 +318,14 @@ def main():
     # experiment logging
     history = {"train": [], "val": []}
     best = {}
+    best_metric_keys = ("group_mAP_1.0", "group_mAP_0.5", "outlier_mIoU", "loss")
     args_json_path = os.path.join(save_path, "args.json")
     experiment.save_args(args_json_path, vars(args))
+    last_epoch = start_epoch - 1
 
     # training phase
     for epoch in range(start_epoch, args.epochs + 1):
+        last_epoch = epoch
         print_log(save_path, '----- %s at epoch #%d' % ("Train", epoch))
         train_log = train(train_loader, model, criterion, optimizer, epoch)
         
@@ -355,7 +358,8 @@ def main():
                 "outlier_mIoU": result['outlier_mIoU'],
             })
             history = experiment.update_history(history, "val", epoch, val_metrics)
-            best = experiment.update_best(best, epoch, {**val_metrics, "loss": test_log['loss']})
+            prev_best = copy.deepcopy(best)
+            best = experiment.update_best(best, epoch, {**val_metrics, "loss": test_log['loss']}, keys=best_metric_keys)
 
             # save summary and curves
             summary_path = os.path.join(save_path, "summary.json")
@@ -370,8 +374,26 @@ def main():
                 'optimizer': optimizer.state_dict(),
                 'scheduler': scheduler.state_dict(),
             }
-            result_path = save_path + '/epoch%d.pth' % epoch
-            torch.save(state, result_path)
+            for metric in best_metric_keys:
+                if metric not in best:
+                    continue
+                improved = (metric not in prev_best) or (best[metric]["epoch"] != prev_best[metric]["epoch"])
+                if improved and best[metric]["epoch"] == epoch:
+                    metric_name = metric.replace('.', '_')
+                    best_path = os.path.join(save_path, f'best_{metric_name}.pth')
+                    torch.save(state, best_path)
+                    print_log(save_path, f"Saved best checkpoint for {metric}: {best_path}")
+
+    # always save the final checkpoint once at the end of training
+    last_state = {
+        'epoch': last_epoch,
+        'state_dict': model.state_dict(),
+        'optimizer': optimizer.state_dict(),
+        'scheduler': scheduler.state_dict(),
+    }
+    last_path = os.path.join(save_path, 'last.pth')
+    torch.save(last_state, last_path)
+    print_log(save_path, f"Saved final checkpoint: {last_path}")
 
 
 def train(train_loader, model, criterion, optimizer, epoch):
