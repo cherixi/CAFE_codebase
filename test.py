@@ -27,6 +27,10 @@ parser.add_argument('--dataset', default='cafe', type=str, help='dataset name')
 parser.add_argument('--val_mode', action='store_true')
 parser.add_argument('--split', default='place', type=str, help='dataset split. place or view')
 parser.add_argument('--data_path', default='/home/ziyang/aixi/Dataset/Cafe_Dataset/Cafe_Dataset/Dataset/', type=str, help='data path')
+parser.add_argument('--tracks_source', default='gt', type=str, choices=['gt', 'pred'],
+                    help='which track pkl to load under data_path/cafe: gt_tracks.pkl or pred_tracks_aligned_to_gt_slots.pkl')
+parser.add_argument('--tracks_pkl_path', default='', type=str,
+                    help='optional explicit pkl path; if set, it overrides --tracks_source')
 parser.add_argument('--image_width', default=1120, type=int, help='Image width to resize (1120 for DINOv2, 1280 for ResNet)')
 parser.add_argument('--image_height', default=630, type=int, help='Image height to resize (630 for DINOv2, 720 for ResNet)')
 parser.add_argument('--random_sampling', action='store_true', help='random sampling strategy')

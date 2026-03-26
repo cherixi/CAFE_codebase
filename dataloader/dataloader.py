@@ -80,17 +80,34 @@ def read_dataset(args):
             print(f"    Loaded {len(test_frames)} test clips")
 
         # actor tracklets for all frames
-        tracks_json_path = os.path.join(data_path, 'gt_tracks.json')
-        tracks_pkl_path = os.path.join(data_path, 'gt_tracks.pkl')
+        tracks_source = getattr(args, 'tracks_source', 'gt')
+        tracks_pkl_path_arg = getattr(args, 'tracks_pkl_path', '')
 
-        if os.path.exists(tracks_json_path):
-            print(f"    Loading actor tracklets from: {tracks_json_path}")
-            all_tracks = _load_tracks_from_json(tracks_json_path)
-            print(f"    Tracklets loaded (json)")
+        if tracks_pkl_path_arg:
+            tracks_pkl_path = tracks_pkl_path_arg
+            print(f"    Track source: custom pkl path")
         else:
+            if tracks_source == 'pred':
+                tracks_pkl_path = os.path.join(data_path, 'pred_tracks_aligned_to_gt_slots.pkl')
+            else:
+                tracks_pkl_path = os.path.join(data_path, 'gt_tracks.pkl')
+            print(f"    Track source: {tracks_source}")
+
+        tracks_json_path = os.path.join(data_path, 'gt_tracks.json')
+
+        # Priority: pkl first, then json fallback.
+        if os.path.exists(tracks_pkl_path):
             print(f"    Loading actor tracklets from: {tracks_pkl_path}")
             all_tracks = pickle.load(open(tracks_pkl_path, 'rb'))
             print(f"    Tracklets loaded (pkl)")
+        elif os.path.exists(tracks_json_path):
+            print(f"    pkl not found, fallback to json: {tracks_json_path}")
+            all_tracks = _load_tracks_from_json(tracks_json_path)
+            print(f"    Tracklets loaded (json)")
+        else:
+            raise FileNotFoundError(
+                f"Neither track pkl nor json exists. Checked pkl: {tracks_pkl_path}, json: {tracks_json_path}"
+            )
 
         print(f"    Creating dataset objects...")
         train_set = CafeDataset(train_frames, train_data, all_tracks, data_path, args, is_training=True)
