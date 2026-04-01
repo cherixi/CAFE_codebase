@@ -181,6 +181,23 @@ def parse_args() -> argparse.Namespace:
         help="Output meta json path. Default: <data_root>/object_tracks_gdino_swinb_meta.json",
     )
     parser.add_argument(
+        "--world_size",
+        type=int,
+        default=1,
+        help="Number of shard workers (typically number of GPUs).",
+    )
+    parser.add_argument(
+        "--rank",
+        type=int,
+        default=0,
+        help="Current worker rank in [0, world_size-1].",
+    )
+    parser.add_argument(
+        "--merge_shards",
+        action="store_true",
+        help="Merge shard outputs into final output_pkl/output_meta and exit.",
+    )
+    parser.add_argument(
         "--backend",
         type=str,
         default="official",
@@ -249,6 +266,26 @@ def parse_args() -> argparse.Namespace:
         default="cuda",
         help="Inference device: cuda or cpu.",
     )
+    parser.add_argument(
+        "--frame_batch_size",
+        type=int,
+        default=4,
+        help="Frames per inference batch for HF backend. >1 can significantly improve throughput.",
+    )
+    oom_group = parser.add_mutually_exclusive_group()
+    oom_group.add_argument(
+        "--auto_reduce_batch_on_oom",
+        dest="auto_reduce_batch_on_oom",
+        action="store_true",
+        help="On CUDA OOM during frame batching, automatically halve batch size and retry.",
+    )
+    oom_group.add_argument(
+        "--no_auto_reduce_batch_on_oom",
+        dest="auto_reduce_batch_on_oom",
+        action="store_false",
+        help="Disable auto OOM recovery for frame batching.",
+    )
+    parser.set_defaults(auto_reduce_batch_on_oom=True)
     parser.add_argument(
         "--min_area",
         type=float,
@@ -1003,6 +1040,218 @@ def run_packs_for_frame(
     return image_source, proposals
 
 
+def is_cuda_oom_error(exc: BaseException) -> bool:
+    msg = str(exc).lower()
+    return "out of memory" in msg or "cuda error: out of memory" in msg
+
+
+def run_packs_for_frames(
+    model,
+    image_paths: Sequence[Path],
+    prompt_packs: Sequence[PromptPack],
+    min_area: float,
+    allow_unknown_phrase: bool,
+    device: str,
+    phone_max_area: float = 0.06,
+) -> List[Tuple[np.ndarray, List[dict]]]:
+    if not image_paths:
+        return []
+
+    if isinstance(model, dict):
+        backend = str(model.get("backend", "official")).strip().lower()
+        model_impl = model.get("model")
+    else:
+        backend = "official"
+        model_impl = model
+
+    # Batch path is only implemented for HF backend.
+    if backend != "hf" or len(image_paths) == 1:
+        out: List[Tuple[np.ndarray, List[dict]]] = []
+        for image_path in image_paths:
+            out.append(
+                run_packs_for_frame(
+                    model=model,
+                    image_path=image_path,
+                    prompt_packs=prompt_packs,
+                    min_area=min_area,
+                    allow_unknown_phrase=allow_unknown_phrase,
+                    device=device,
+                    phone_max_area=phone_max_area,
+                )
+            )
+        return out
+
+    processor = model.get("processor")
+    if processor is None:
+        raise ValueError("HF backend requires a processor in model bundle.")
+
+    pil_images: List[Image.Image] = []
+    image_sources: List[np.ndarray] = []
+    for image_path in image_paths:
+        pil = Image.open(image_path).convert("RGB")
+        pil_images.append(pil)
+        image_sources.append(np.asarray(pil))
+
+    frame_props: List[List[dict]] = [[] for _ in image_paths]
+
+    def append_pack_results_for_frame(
+        frame_index: int,
+        pack: PromptPack,
+        boxes_xyxy: torch.Tensor,
+        logits: torch.Tensor,
+        phrases: Sequence[Any],
+    ) -> None:
+        for idx in range(boxes_xyxy.shape[0]):
+            phrase = normalize_phrase(str(phrases[idx]))
+            token = map_phrase_to_token(phrase)
+            if token is None:
+                if allow_unknown_phrase:
+                    family = "unknown-family"
+                    family_id = 0
+                    token_id = 0
+                    token_name = "unknown"
+                else:
+                    continue
+            else:
+                family = TOKEN_TO_FAMILY.get(token)
+                if family is None:
+                    continue
+                family_id = FAMILY_TO_ID[family]
+                token_id = TOKEN_TO_ID[token]
+                token_name = token
+
+            x1, y1, x2, y2 = [float(v) for v in boxes_xyxy[idx].tolist()]
+            if x2 <= x1 or y2 <= y1:
+                continue
+            area = (x2 - x1) * (y2 - y1)
+            if area < min_area:
+                continue
+            if (
+                family == "phone-family"
+                and phone_max_area > 0.0
+                and area > phone_max_area
+            ):
+                continue
+
+            frame_props[frame_index].append(
+                {
+                    "x1": x1,
+                    "y1": y1,
+                    "x2": x2,
+                    "y2": y2,
+                    "score": float(logits[idx].item()),
+                    "family": family,
+                    "family_id": family_id,
+                    "pack_id": pack.pack_id,
+                    "pack_name": pack.name,
+                    "token": token_name,
+                    "token_id": token_id,
+                    "raw_phrase": phrase,
+                }
+            )
+
+    hf_pack_batch = bool(model.get("hf_pack_batch", True))
+    hf_dtype_name = str(model.get("hf_dtype", "auto"))
+    hf_amp_dtype = resolve_hf_torch_dtype(device=device, hf_dtype=hf_dtype_name)
+
+    pack_items: List[Tuple[PromptPack, List[str]]] = []
+    for pack in prompt_packs:
+        labels = [
+            normalize_phrase(x)
+            for x in str(pack.caption).split(".")
+            if normalize_phrase(x)
+        ]
+        pack_items.append((pack, labels))
+
+    if hf_pack_batch:
+        grouped: Dict[Tuple[float, float], List[Tuple[PromptPack, List[str]]]] = defaultdict(list)
+        for item in pack_items:
+            p = item[0]
+            grouped[(float(p.box_threshold), float(p.text_threshold))].append(item)
+        grouped_items = [grouped[k] for k in sorted(grouped.keys())]
+    else:
+        grouped_items = [[item] for item in pack_items]
+
+    for group in grouped_items:
+        sample_pack = group[0][0]
+        group_box_th = float(sample_pack.box_threshold)
+        group_text_th = float(sample_pack.text_threshold)
+
+        batch_images: List[Image.Image] = []
+        batch_captions: List[str] = []
+        batch_text_labels: List[List[str]] = []
+        batch_target_sizes: List[Tuple[int, int]] = []
+        batch_meta: List[Tuple[int, PromptPack, int, int]] = []
+
+        for frame_idx, pil in enumerate(pil_images):
+            for pack, labels in group:
+                batch_images.append(pil)
+                batch_captions.append(pack.caption)
+                batch_text_labels.append(labels)
+                batch_target_sizes.append((pil.height, pil.width))
+                batch_meta.append((frame_idx, pack, pil.width, pil.height))
+
+        inputs = processor(
+            images=batch_images,
+            text=batch_captions,
+            return_tensors="pt",
+            padding=True,
+        )
+        inputs = {
+            k: (v.to(device) if torch.is_tensor(v) else v)
+            for k, v in inputs.items()
+        }
+
+        with torch.inference_mode():
+            with build_hf_autocast_context(device=device, amp_dtype=hf_amp_dtype):
+                outputs = model_impl(**inputs)
+
+        try:
+            results = processor.post_process_grounded_object_detection(
+                outputs,
+                inputs["input_ids"],
+                box_threshold=group_box_th,
+                text_threshold=group_text_th,
+                target_sizes=batch_target_sizes,
+                text_labels=batch_text_labels,
+            )
+        except TypeError:
+            results = processor.post_process_grounded_object_detection(
+                outputs,
+                inputs["input_ids"],
+                threshold=group_box_th,
+                text_threshold=group_text_th,
+                target_sizes=batch_target_sizes,
+                text_labels=batch_text_labels,
+            )
+
+        for (frame_idx, pack, img_w, img_h), result in zip(batch_meta, results):
+            boxes = result.get("boxes")
+            if boxes is None or len(boxes) == 0:
+                continue
+            logits = result.get("scores")
+            phrases = result.get("text_labels")
+            if phrases is None:
+                phrases = result.get("labels")
+
+            if not isinstance(boxes, torch.Tensor):
+                boxes = torch.as_tensor(boxes, dtype=torch.float32)
+            if not isinstance(logits, torch.Tensor):
+                logits = torch.as_tensor(logits, dtype=torch.float32)
+            if boxes.ndim == 1:
+                boxes = boxes.unsqueeze(0)
+            if logits.ndim == 0:
+                logits = logits.unsqueeze(0)
+
+            boxes = boxes.detach().cpu().float()
+            logits = logits.detach().cpu().float()
+            norm = torch.tensor([img_w, img_h, img_w, img_h], dtype=torch.float32)
+            boxes_xyxy = (boxes / norm).clamp(0.0, 1.0)
+            append_pack_results_for_frame(frame_idx, pack, boxes_xyxy, logits, phrases)
+
+    return list(zip(image_sources, frame_props))
+
+
 def _intersection_xyxy(
     a: Tuple[float, float, float, float],
     b: Tuple[float, float, float, float],
@@ -1502,17 +1751,33 @@ def draw_visualization(
     image.save(save_path)
 
 
-def ensure_outputs(args: argparse.Namespace) -> Tuple[Path, Path]:
+def resolve_base_outputs(args: argparse.Namespace) -> Tuple[Path, Path]:
     data_root = Path(args.data_root)
     if args.output_pkl:
-        output_pkl = Path(args.output_pkl)
+        base_output_pkl = Path(args.output_pkl)
     else:
-        output_pkl = data_root / "object_tracks_gdino_swinb.pkl"
+        base_output_pkl = data_root / "object_tracks_gdino_swinb.pkl"
 
     if args.output_meta:
-        output_meta = Path(args.output_meta)
+        base_output_meta = Path(args.output_meta)
     else:
-        output_meta = data_root / "object_tracks_gdino_swinb_meta.json"
+        base_output_meta = data_root / "object_tracks_gdino_swinb_meta.json"
+    return base_output_pkl, base_output_meta
+
+
+def shard_path(path: Path, rank: int, world_size: int) -> Path:
+    return path.with_name(f"{path.stem}.rank{rank:02d}of{world_size:02d}{path.suffix}")
+
+
+def ensure_outputs(args: argparse.Namespace) -> Tuple[Path, Path]:
+    base_output_pkl, base_output_meta = resolve_base_outputs(args)
+    if args.merge_shards:
+        output_pkl, output_meta = base_output_pkl, base_output_meta
+    elif args.world_size > 1:
+        output_pkl = shard_path(base_output_pkl, args.rank, args.world_size)
+        output_meta = shard_path(base_output_meta, args.rank, args.world_size)
+    else:
+        output_pkl, output_meta = base_output_pkl, base_output_meta
 
     for path in (output_pkl, output_meta):
         if path.exists() and not args.overwrite:
@@ -1525,15 +1790,150 @@ def ensure_outputs(args: argparse.Namespace) -> Tuple[Path, Path]:
     return output_pkl, output_meta
 
 
+def merge_sharded_outputs(
+    args: argparse.Namespace,
+    final_output_pkl: Path,
+    final_output_meta: Path,
+) -> None:
+    if args.world_size <= 1:
+        raise ValueError("--merge_shards requires --world_size > 1.")
+    base_output_pkl, base_output_meta = resolve_base_outputs(args)
+    shard_pkls = [
+        shard_path(base_output_pkl, rank, args.world_size) for rank in range(args.world_size)
+    ]
+    shard_metas = [
+        shard_path(base_output_meta, rank, args.world_size) for rank in range(args.world_size)
+    ]
+    missing_pkls = [str(p) for p in shard_pkls if not p.exists()]
+    if missing_pkls:
+        raise FileNotFoundError(
+            "Missing shard pkl files:\n" + "\n".join(missing_pkls)
+        )
+
+    merged_tracks: Dict[Tuple[int, int], List[np.ndarray]] = {}
+    for p in shard_pkls:
+        with open(p, "rb") as f:
+            shard_tracks = pickle.load(f)
+        if not isinstance(shard_tracks, dict):
+            raise TypeError(f"Shard track file should be dict: {p}")
+        overlap = set(merged_tracks.keys()).intersection(set(shard_tracks.keys()))
+        if overlap:
+            sample = sorted(list(overlap))[:5]
+            raise ValueError(
+                f"Duplicate clip keys found while merging {p}: sample={sample}"
+            )
+        merged_tracks.update(shard_tracks)
+
+    final_output_pkl.parent.mkdir(parents=True, exist_ok=True)
+    with open(final_output_pkl, "wb") as f:
+        pickle.dump(merged_tracks, f, protocol=pickle.HIGHEST_PROTOCOL)
+
+    shard_meta_payloads = []
+    for p in shard_metas:
+        if p.exists():
+            with open(p, "r", encoding="utf-8") as f:
+                shard_meta_payloads.append(json.load(f))
+
+    if shard_meta_payloads:
+        merged_meta = shard_meta_payloads[0]
+    else:
+        merged_meta = {"format": {}, "paths": {}, "stats": {}}
+
+    sum_keys = [
+        "total_clips",
+        "total_frames",
+        "frames_no_raw",
+        "frames_no_person_overlap",
+        "frames_no_final",
+        "raw_props_total",
+        "person_boxes_total",
+        "person_gate_props_total",
+        "person_filtered_out_total",
+        "nms_props_total",
+        "contain_props_total",
+        "capped_props_total",
+        "subset_props_total",
+        "cross_dedup_props_total",
+        "final_props_total",
+        "final_valid_total",
+        "errors",
+    ]
+    merged_stats: Dict[str, float] = {k: 0.0 for k in sum_keys}
+    merged_family_counter: Counter = Counter()
+    merged_token_counter: Counter = Counter()
+    merged_pack_counter: Counter = Counter()
+    for m in shard_meta_payloads:
+        st = m.get("stats", {})
+        for k in sum_keys:
+            v = st.get(k, 0)
+            if isinstance(v, (int, float)):
+                merged_stats[k] += float(v)
+        merged_family_counter.update(st.get("final_family_counter", {}))
+        merged_token_counter.update(st.get("final_token_counter", {}))
+        merged_pack_counter.update(st.get("raw_pack_counter", {}))
+
+    total_frames = max(int(merged_stats["total_frames"]), 1)
+    merged_stats["avg_raw_props_per_frame"] = (
+        float(merged_stats["raw_props_total"]) / total_frames
+    )
+    merged_stats["avg_person_gate_props_per_frame"] = (
+        float(merged_stats["person_gate_props_total"]) / total_frames
+    )
+    merged_stats["avg_final_props_per_frame"] = (
+        float(merged_stats["final_props_total"]) / total_frames
+    )
+    merged_stats["avg_valid_rows_per_frame"] = (
+        float(merged_stats["final_valid_total"]) / total_frames
+    )
+    merged_stats["final_family_counter"] = dict(merged_family_counter)
+    merged_stats["final_token_counter"] = dict(merged_token_counter)
+    merged_stats["raw_pack_counter"] = dict(merged_pack_counter)
+
+    merged_meta.setdefault("paths", {})
+    merged_meta["paths"]["output_pkl"] = str(final_output_pkl)
+    merged_meta["paths"]["output_meta"] = str(final_output_meta)
+    merged_meta["paths"]["base_output_pkl"] = str(base_output_pkl)
+    merged_meta["paths"]["base_output_meta"] = str(base_output_meta)
+    merged_meta["paths"]["merged_from_shards"] = [str(p) for p in shard_pkls]
+    merged_meta["sharding"] = {
+        "world_size": int(args.world_size),
+        "mode": "merged",
+    }
+    merged_meta["stats"] = merged_stats
+
+    final_output_meta.parent.mkdir(parents=True, exist_ok=True)
+    with open(final_output_meta, "w", encoding="utf-8") as f:
+        json.dump(merged_meta, f, ensure_ascii=False, indent=2)
+
+    print("[merge] Done.")
+    print(f"  Merged shards : {len(shard_pkls)}")
+    print(f"  Saved pkl     : {final_output_pkl}")
+    print(f"  Saved meta    : {final_output_meta}")
+
+
 def main() -> None:
     args = parse_args()
     if args.global_topk <= 0:
         raise ValueError("--global_topk must be > 0 for fixed-length export.")
+    if args.frame_batch_size <= 0:
+        raise ValueError("--frame_batch_size must be > 0.")
+    if args.world_size <= 0:
+        raise ValueError("--world_size must be > 0.")
+    if args.rank < 0 or args.rank >= args.world_size:
+        raise ValueError("--rank must satisfy 0 <= rank < world_size.")
     random.seed(args.seed)
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
 
     output_pkl, output_meta = ensure_outputs(args)
+    if args.merge_shards:
+        merge_sharded_outputs(
+            args=args,
+            final_output_pkl=output_pkl,
+            final_output_meta=output_meta,
+        )
+        return
+
     prompt_packs = build_prompt_packs(args)
     family_caps = get_family_caps(args)
     family_quota = get_family_quota(args)
@@ -1559,8 +1959,29 @@ def main() -> None:
     clips, frame_keys = collect_clips(data_root)
     if not clips:
         raise RuntimeError(f"No valid clips found under: {data_root}")
-    print(f"  Found clips: {len(clips)}")
-    print(f"  Found frames: {len(frame_keys)}")
+    total_clips_all = len(clips)
+    total_frames_all = len(frame_keys)
+    if args.world_size > 1:
+        local_clips = [
+            clip for idx, clip in enumerate(clips) if idx % args.world_size == args.rank
+        ]
+        local_frame_keys: List[Tuple[int, int, int]] = []
+        for clip in local_clips:
+            vid = clip["vid"]
+            cid = clip["cid"]
+            local_frame_keys.extend([(vid, cid, fid) for fid, _ in clip["frames"]])
+        clips = local_clips
+        frame_keys = local_frame_keys
+    print(f"  Found clips (all) : {total_clips_all}")
+    print(f"  Found frames (all): {total_frames_all}")
+    if args.world_size > 1:
+        print(
+            f"  Shard rank/world  : {args.rank}/{args.world_size} "
+            f"(clips={len(clips)}, frames={len(frame_keys)})"
+        )
+    else:
+        print(f"  Found clips       : {len(clips)}")
+        print(f"  Found frames      : {len(frame_keys)}")
 
     vis_key_set = set()
     if args.vis_dir and args.vis_samples > 0 and frame_keys:
@@ -1595,7 +2016,12 @@ def main() -> None:
     token_counter = Counter()
     pack_counter = Counter()
 
-    clip_bar = tqdm(clips, desc="Clips", ncols=100)
+    clip_desc = (
+        f"Clips[r{args.rank}/{args.world_size}]"
+        if args.world_size > 1
+        else "Clips"
+    )
+    clip_bar = tqdm(clips, desc=clip_desc, ncols=100)
     for clip in clip_bar:
         vid = clip["vid"]
         cid = clip["cid"]
@@ -1604,111 +2030,161 @@ def main() -> None:
             np.zeros((args.global_topk, 10), dtype=np.float32) for _ in range(max_fid + 1)
         ]
 
-        for fid, image_path in clip["frames"]:
-            stats["total_frames"] += 1
+        model_backend = (
+            str(model.get("backend", "official")).strip().lower()
+            if isinstance(model, dict)
+            else "official"
+        )
+        use_frame_batch = model_backend == "hf" and args.frame_batch_size > 1
+        target_batch_size = max(1, int(args.frame_batch_size)) if use_frame_batch else 1
+        current_batch_size = target_batch_size
+
+        clip_frames = clip["frames"]
+        frame_idx = 0
+        while frame_idx < len(clip_frames):
+            take = min(current_batch_size, len(clip_frames) - frame_idx)
+            frame_batch = clip_frames[frame_idx : frame_idx + take]
+            fids = [item[0] for item in frame_batch]
+            paths = [item[1] for item in frame_batch]
+
+            batch_results: List[Tuple[Optional[np.ndarray], List[dict]]]
             try:
-                image_source, raw_props = run_packs_for_frame(
-                    model=model,
-                    image_path=image_path,
-                    prompt_packs=prompt_packs,
-                    min_area=args.min_area,
-                    allow_unknown_phrase=args.allow_unknown_phrase,
-                    device=args.device,
-                    phone_max_area=args.phone_max_area,
-                )
+                if use_frame_batch:
+                    batch_results = run_packs_for_frames(
+                        model=model,
+                        image_paths=paths,
+                        prompt_packs=prompt_packs,
+                        min_area=args.min_area,
+                        allow_unknown_phrase=args.allow_unknown_phrase,
+                        device=args.device,
+                        phone_max_area=args.phone_max_area,
+                    )
+                else:
+                    batch_results = []
+                    for pth in paths:
+                        image_source, raw_props = run_packs_for_frame(
+                            model=model,
+                            image_path=pth,
+                            prompt_packs=prompt_packs,
+                            min_area=args.min_area,
+                            allow_unknown_phrase=args.allow_unknown_phrase,
+                            device=args.device,
+                            phone_max_area=args.phone_max_area,
+                        )
+                        batch_results.append((image_source, raw_props))
+            except RuntimeError as exc:
+                if (
+                    use_frame_batch
+                    and args.auto_reduce_batch_on_oom
+                    and take > 1
+                    and is_cuda_oom_error(exc)
+                ):
+                    current_batch_size = max(1, take // 2)
+                    if str(args.device).lower().startswith("cuda"):
+                        torch.cuda.empty_cache()
+                    clip_bar.set_postfix_str(f"oom_retry_bs={current_batch_size}")
+                    continue
+                stats["errors"] += len(frame_batch)
+                batch_results = [(None, []) for _ in frame_batch]
             except Exception:
-                stats["errors"] += 1
-                raw_props = []
-                image_source = None
+                stats["errors"] += len(frame_batch)
+                batch_results = [(None, []) for _ in frame_batch]
 
-            if not raw_props:
-                stats["frames_no_raw"] += 1
-                stats["frames_no_final"] += 1
-                continue
+            if use_frame_batch and current_batch_size < target_batch_size:
+                current_batch_size = min(target_batch_size, current_batch_size * 2)
 
-            stats["raw_props_total"] += len(raw_props)
-            for p in raw_props:
-                pack_counter[p["pack_name"]] += 1
+            for fid, (image_source, raw_props) in zip(fids, batch_results):
+                stats["total_frames"] += 1
+                if not raw_props:
+                    stats["frames_no_raw"] += 1
+                    stats["frames_no_final"] += 1
+                    continue
 
-            person_boxes_xyxy = get_expanded_person_boxes_xyxy(
-                person_tracks=person_tracks,
-                vid=vid,
-                cid=cid,
-                fid=fid,
-                expand_ratio=args.person_expand_ratio,
-            )
-            stats["person_boxes_total"] += len(person_boxes_xyxy)
+                stats["raw_props_total"] += len(raw_props)
+                for p in raw_props:
+                    pack_counter[p["pack_name"]] += 1
 
-            person_gated_props = filter_proposals_by_person_overlap(
-                raw_props,
-                person_boxes_xyxy=person_boxes_xyxy,
-                min_intersection=args.person_min_intersection,
-            )
-            stats["person_gate_props_total"] += len(person_gated_props)
-            stats["person_filtered_out_total"] += max(
-                len(raw_props) - len(person_gated_props), 0
-            )
-            if not person_gated_props:
-                stats["frames_no_person_overlap"] += 1
-                stats["frames_no_final"] += 1
-                continue
+                person_boxes_xyxy = get_expanded_person_boxes_xyxy(
+                    person_tracks=person_tracks,
+                    vid=vid,
+                    cid=cid,
+                    fid=fid,
+                    expand_ratio=args.person_expand_ratio,
+                )
+                stats["person_boxes_total"] += len(person_boxes_xyxy)
 
-            nms_props = apply_class_aware_nms(person_gated_props, family_nms_iou)
-            stats["nms_props_total"] += len(nms_props)
+                person_gated_props = filter_proposals_by_person_overlap(
+                    raw_props,
+                    person_boxes_xyxy=person_boxes_xyxy,
+                    min_intersection=args.person_min_intersection,
+                )
+                stats["person_gate_props_total"] += len(person_gated_props)
+                stats["person_filtered_out_total"] += max(
+                    len(raw_props) - len(person_gated_props), 0
+                )
+                if not person_gated_props:
+                    stats["frames_no_person_overlap"] += 1
+                    stats["frames_no_final"] += 1
+                    continue
 
-            contain_props = apply_containment_suppression(
-                nms_props,
-                containment_ratio_thr=args.containment_ratio_thr,
-                containment_area_ratio=args.containment_area_ratio,
-                containment_score_margin=args.containment_score_margin,
-            )
-            stats["contain_props_total"] += len(contain_props)
+                nms_props = apply_class_aware_nms(person_gated_props, family_nms_iou)
+                stats["nms_props_total"] += len(nms_props)
 
-            capped_props = apply_family_caps(contain_props, family_caps)
-            stats["capped_props_total"] += len(capped_props)
+                contain_props = apply_containment_suppression(
+                    nms_props,
+                    containment_ratio_thr=args.containment_ratio_thr,
+                    containment_area_ratio=args.containment_area_ratio,
+                    containment_score_margin=args.containment_score_margin,
+                )
+                stats["contain_props_total"] += len(contain_props)
 
-            scored_props = apply_family_score_multipliers(capped_props, family_score_mult)
-            scored_props = apply_token_score_multipliers(scored_props, token_score_mult)
-            subset_props = apply_global_subset_suppression(
-                scored_props,
-                subset_containment_thr=args.subset_containment_thr,
-                subset_area_ratio_thr=args.subset_area_ratio_thr,
-            )
-            stats["subset_props_total"] += len(subset_props)
-            dedup_props = apply_cross_token_dedup(
-                subset_props,
-                iou_thr=args.cross_token_iou_thr,
-                area_ratio_thr=args.cross_token_area_ratio_thr,
-                center_dist_thr=args.cross_token_center_dist_thr,
-            )
-            stats["cross_dedup_props_total"] += len(dedup_props)
-            final_props = apply_global_quota_and_topk(
-                dedup_props,
-                family_quota,
-                args.global_topk,
-                slot_iou_thr=args.slot_iou_thr,
-                subset_containment_thr=args.subset_containment_thr,
-                subset_area_ratio_thr=args.subset_area_ratio_thr,
-            )
-            stats["final_props_total"] += len(final_props)
-            if not final_props:
-                stats["frames_no_final"] += 1
-                continue
+                capped_props = apply_family_caps(contain_props, family_caps)
+                stats["capped_props_total"] += len(capped_props)
 
-            for p in final_props:
-                family_counter[p["family"]] += 1
-                token_counter[p["token"]] += 1
+                scored_props = apply_family_score_multipliers(capped_props, family_score_mult)
+                scored_props = apply_token_score_multipliers(scored_props, token_score_mult)
+                subset_props = apply_global_subset_suppression(
+                    scored_props,
+                    subset_containment_thr=args.subset_containment_thr,
+                    subset_area_ratio_thr=args.subset_area_ratio_thr,
+                )
+                stats["subset_props_total"] += len(subset_props)
+                dedup_props = apply_cross_token_dedup(
+                    subset_props,
+                    iou_thr=args.cross_token_iou_thr,
+                    area_ratio_thr=args.cross_token_area_ratio_thr,
+                    center_dist_thr=args.cross_token_center_dist_thr,
+                )
+                stats["cross_dedup_props_total"] += len(dedup_props)
+                final_props = apply_global_quota_and_topk(
+                    dedup_props,
+                    family_quota,
+                    args.global_topk,
+                    slot_iou_thr=args.slot_iou_thr,
+                    subset_containment_thr=args.subset_containment_thr,
+                    subset_area_ratio_thr=args.subset_area_ratio_thr,
+                )
+                stats["final_props_total"] += len(final_props)
+                if not final_props:
+                    stats["frames_no_final"] += 1
+                    continue
 
-            fixed_rows = proposals_to_fixed_array(
-                final_props, fixed_len=args.global_topk
-            )
-            clip_tracks[fid] = fixed_rows
-            stats["final_valid_total"] += int(fixed_rows[:, 9].sum())
+                for p in final_props:
+                    family_counter[p["family"]] += 1
+                    token_counter[p["token"]] += 1
 
-            frame_key = (vid, cid, fid)
-            if image_source is not None and frame_key in vis_key_set:
-                vis_path = Path(args.vis_dir) / f"{vid}_{cid}_{fid}.jpg"
-                draw_visualization(image_source, final_props, vis_path)
+                fixed_rows = proposals_to_fixed_array(
+                    final_props, fixed_len=args.global_topk
+                )
+                clip_tracks[fid] = fixed_rows
+                stats["final_valid_total"] += int(fixed_rows[:, 9].sum())
+
+                frame_key = (vid, cid, fid)
+                if image_source is not None and frame_key in vis_key_set:
+                    vis_path = Path(args.vis_dir) / f"{vid}_{cid}_{fid}.jpg"
+                    draw_visualization(image_source, final_props, vis_path)
+
+            frame_idx += take
 
         tracks[(vid, cid)] = clip_tracks
 
@@ -1752,6 +2228,8 @@ def main() -> None:
             "data_root": str(data_root),
             "output_pkl": str(output_pkl),
             "output_meta": str(output_meta),
+            "base_output_pkl": str(resolve_base_outputs(args)[0]),
+            "base_output_meta": str(resolve_base_outputs(args)[1]),
             "vis_dir": str(args.vis_dir) if args.vis_dir else "",
             "backend": args.backend,
             "device": args.device,
@@ -1762,7 +2240,18 @@ def main() -> None:
             "hf_dtype": args.hf_dtype,
             "hf_pack_batch": bool(args.hf_pack_batch),
             "hf_compile": bool(args.hf_compile),
+            "frame_batch_size": int(args.frame_batch_size),
+            "auto_reduce_batch_on_oom": bool(args.auto_reduce_batch_on_oom),
             "person_tracks_pkl": str(person_tracks_path),
+        },
+        "sharding": {
+            "world_size": int(args.world_size),
+            "rank": int(args.rank),
+            "mode": "shard" if args.world_size > 1 else "single",
+            "clips_all": int(total_clips_all),
+            "frames_all": int(total_frames_all),
+            "clips_this_rank": int(len(clips)),
+            "frames_this_rank": int(len(frame_keys)),
         },
         "prompt_packs": [
             {
@@ -1824,6 +2313,11 @@ def main() -> None:
     print("[6/6] Done.")
     print(f"  Saved pkl : {output_pkl}")
     print(f"  Saved meta: {output_meta}")
+    if args.world_size > 1:
+        print(
+            f"  Shard info: rank={args.rank}/{args.world_size} "
+            "(run all ranks, then use --merge_shards)"
+        )
     if args.vis_dir and args.vis_samples > 0:
         print(f"  Saved vis : {args.vis_dir}")
     print("  Summary:")
