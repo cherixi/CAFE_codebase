@@ -1921,6 +1921,14 @@ def main() -> None:
         raise ValueError("--world_size must be > 0.")
     if args.rank < 0 or args.rank >= args.world_size:
         raise ValueError("--rank must satisfy 0 <= rank < world_size.")
+    if str(args.device).lower().startswith("cuda"):
+        if not torch.cuda.is_available():
+            raise RuntimeError(
+                "CUDA requested but no visible GPU in this process. "
+                f"rank/world={args.rank}/{args.world_size}, "
+                f"CUDA_VISIBLE_DEVICES={os.environ.get('CUDA_VISIBLE_DEVICES', '<unset>')}, "
+                f"torch={torch.__version__}, torch_cuda={torch.version.cuda}"
+            )
     random.seed(args.seed)
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
