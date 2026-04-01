@@ -25,6 +25,7 @@ Coordinates are normalized xyxy in [0, 1].
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import pickle
@@ -33,7 +34,7 @@ import re
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
@@ -41,12 +42,19 @@ from PIL import Image, ImageDraw
 from torchvision.ops import nms
 from tqdm import tqdm
 
+gdino_load_image = None
+gdino_load_model = None
+gdino_predict = None
+OFFICIAL_GDINO_AVAILABLE = False
+
 try:
-    from groundingdino.util.inference import load_image, load_model, predict
-except ImportError as exc:
-    raise ImportError(
-        "Failed to import GroundingDINO. Install and activate its environment first."
-    ) from exc
+    from transformers import AutoModelForZeroShotObjectDetection, AutoProcessor
+
+    HF_GDINO_AVAILABLE = True
+except ImportError:
+    AutoModelForZeroShotObjectDetection = None
+    AutoProcessor = None
+    HF_GDINO_AVAILABLE = False
 
 
 FAMILY_ORDER = [
@@ -173,16 +181,61 @@ def parse_args() -> argparse.Namespace:
         help="Output meta json path. Default: <data_root>/object_tracks_gdino_swinb_meta.json",
     )
     parser.add_argument(
+        "--backend",
+        type=str,
+        default="official",
+        choices=["official", "hf"],
+        help="Detection backend: official GroundingDINO repo or HuggingFace transformers.",
+    )
+    parser.add_argument(
         "--config_path",
         type=str,
-        required=True,
-        help="GroundingDINO config path (e.g., GroundingDINO_SwinB_cfg.py).",
+        default="",
+        help="GroundingDINO config path for backend=official (e.g., GroundingDINO_SwinB_cfg.py).",
     )
     parser.add_argument(
         "--checkpoint_path",
         type=str,
-        required=True,
-        help="GroundingDINO checkpoint path (e.g., groundingdino_swinb_cogcoor.pth).",
+        default="",
+        help="GroundingDINO checkpoint path for backend=official (e.g., groundingdino_swinb_cogcoor.pth).",
+    )
+    parser.add_argument(
+        "--hf_model_id",
+        type=str,
+        default="IDEA-Research/grounding-dino-base",
+        help="HuggingFace model id for backend=hf.",
+    )
+    parser.add_argument(
+        "--hf_cache_dir",
+        type=str,
+        default="",
+        help="Optional cache dir for HuggingFace model/processor.",
+    )
+    parser.add_argument(
+        "--hf_dtype",
+        type=str,
+        default="auto",
+        choices=["auto", "float16", "bfloat16", "float32"],
+        help="Torch dtype for HF backend. 'auto' uses float16 on CUDA and float32 on CPU.",
+    )
+    batch_group = parser.add_mutually_exclusive_group()
+    batch_group.add_argument(
+        "--hf_pack_batch",
+        dest="hf_pack_batch",
+        action="store_true",
+        help="Batch HF prompt packs with identical thresholds in one forward pass (recommended).",
+    )
+    batch_group.add_argument(
+        "--hf_no_pack_batch",
+        dest="hf_pack_batch",
+        action="store_false",
+        help="Disable HF pack batching and run one pack per forward pass.",
+    )
+    parser.set_defaults(hf_pack_batch=True)
+    parser.add_argument(
+        "--hf_compile",
+        action="store_true",
+        help="Use torch.compile for HF model (PyTorch 2.x, usually better on Linux servers).",
     )
     parser.add_argument(
         "--person_tracks_pkl",
@@ -375,6 +428,140 @@ def boxes_cxcywh_to_xyxy(boxes: torch.Tensor) -> torch.Tensor:
     out[:, 2] = boxes[:, 0] + boxes[:, 2] / 2.0
     out[:, 3] = boxes[:, 1] + boxes[:, 3] / 2.0
     return out
+
+
+def ensure_official_backend_imported() -> None:
+    global gdino_load_image, gdino_load_model, gdino_predict, OFFICIAL_GDINO_AVAILABLE
+    if OFFICIAL_GDINO_AVAILABLE:
+        return
+    try:
+        from groundingdino.util.inference import (
+            load_image as _gdino_load_image,
+            load_model as _gdino_load_model,
+            predict as _gdino_predict,
+        )
+    except ImportError as exc:
+        raise ImportError(
+            "Official GroundingDINO backend unavailable. "
+            "Install groundingdino package and use matching environment."
+        ) from exc
+
+    gdino_load_image = _gdino_load_image
+    gdino_load_model = _gdino_load_model
+    gdino_predict = _gdino_predict
+    OFFICIAL_GDINO_AVAILABLE = True
+
+
+def resolve_hf_torch_dtype(device: str, hf_dtype: str) -> Optional[torch.dtype]:
+    dev = str(device).strip().lower()
+    req = str(hf_dtype).strip().lower()
+    if req == "auto":
+        if dev.startswith("cuda"):
+            return torch.float16
+        return torch.float32
+    if req == "float16":
+        return torch.float16
+    if req == "bfloat16":
+        return torch.bfloat16
+    if req == "float32":
+        return torch.float32
+    raise ValueError(f"Unsupported --hf_dtype: {hf_dtype}")
+
+
+def build_hf_autocast_context(device: str, amp_dtype: Optional[torch.dtype]):
+    dev = str(device).strip().lower()
+    if not dev.startswith("cuda"):
+        return contextlib.nullcontext()
+    if amp_dtype not in (torch.float16, torch.bfloat16):
+        return contextlib.nullcontext()
+    return torch.autocast(device_type="cuda", dtype=amp_dtype)
+
+
+def load_detector(
+    backend: str,
+    device: str,
+    config_path: str = "",
+    checkpoint_path: str = "",
+    hf_model_id: str = "IDEA-Research/grounding-dino-base",
+    hf_cache_dir: str = "",
+    hf_dtype: str = "auto",
+    hf_pack_batch: bool = True,
+    hf_compile: bool = False,
+) -> Dict[str, Any]:
+    backend_name = str(backend).strip().lower()
+    cache_dir = hf_cache_dir.strip() or None
+
+    if backend_name == "official":
+        ensure_official_backend_imported()
+        if not config_path:
+            raise ValueError("--config_path is required when --backend official.")
+        if not checkpoint_path:
+            raise ValueError("--checkpoint_path is required when --backend official.")
+        model = gdino_load_model(config_path, checkpoint_path, device=device)
+        return {
+            "backend": "official",
+            "device": device,
+            "model": model,
+            "config_path": config_path,
+            "checkpoint_path": checkpoint_path,
+        }
+
+    if backend_name == "hf":
+        if not HF_GDINO_AVAILABLE:
+            raise ImportError(
+                "HuggingFace backend unavailable. Please install transformers."
+            )
+        torch_dtype = resolve_hf_torch_dtype(device=device, hf_dtype=hf_dtype)
+        processor = AutoProcessor.from_pretrained(hf_model_id, cache_dir=cache_dir)
+        model_kwargs: Dict[str, Any] = {"cache_dir": cache_dir}
+        if torch_dtype is not None:
+            model_kwargs["dtype"] = torch_dtype
+        try:
+            model = AutoModelForZeroShotObjectDetection.from_pretrained(
+                hf_model_id,
+                **model_kwargs,
+            )
+        except TypeError:
+            model_kwargs.pop("dtype", None)
+            if torch_dtype is not None:
+                model_kwargs["torch_dtype"] = torch_dtype
+            model = AutoModelForZeroShotObjectDetection.from_pretrained(
+                hf_model_id,
+                **model_kwargs,
+            )
+        model = model.to(device)
+        if hf_compile:
+            if not hasattr(torch, "compile"):
+                raise RuntimeError("torch.compile is unavailable in current PyTorch.")
+            model = torch.compile(model, mode="reduce-overhead")
+        model.eval()
+        return {
+            "backend": "hf",
+            "device": device,
+            "model": model,
+            "processor": processor,
+            "hf_model_id": hf_model_id,
+            "hf_cache_dir": hf_cache_dir,
+            "hf_dtype": str(torch_dtype).replace("torch.", ""),
+            "hf_pack_batch": bool(hf_pack_batch),
+            "hf_compile": bool(hf_compile),
+        }
+
+    raise ValueError(f"Unsupported backend: {backend_name}")
+
+
+def load_detector_from_args(args: argparse.Namespace) -> Dict[str, Any]:
+    return load_detector(
+        backend=args.backend,
+        device=args.device,
+        config_path=args.config_path,
+        checkpoint_path=args.checkpoint_path,
+        hf_model_id=args.hf_model_id,
+        hf_cache_dir=args.hf_cache_dir,
+        hf_dtype=args.hf_dtype,
+        hf_pack_batch=args.hf_pack_batch,
+        hf_compile=args.hf_compile,
+    )
 
 
 def parse_fid_from_name(path: Path) -> int:
@@ -619,33 +806,29 @@ def run_packs_for_frame(
     device: str,
     phone_max_area: float = 0.06,
 ) -> Tuple[np.ndarray, List[dict]]:
-    image_source, image_tensor = load_image(str(image_path))
+    if isinstance(model, dict):
+        backend = str(model.get("backend", "official")).strip().lower()
+        model_impl = model.get("model")
+    else:
+        backend = "official"
+        model_impl = model
+
+    if backend == "official":
+        ensure_official_backend_imported()
+        image_source, image_tensor = gdino_load_image(str(image_path))
+    elif backend == "hf":
+        pil_image = Image.open(image_path).convert("RGB")
+        image_source = np.asarray(pil_image)
+    else:
+        raise ValueError(f"Unsupported backend in run_packs_for_frame: {backend}")
+
     proposals: List[dict] = []
-    for pack in prompt_packs:
-        boxes, logits, phrases = predict(
-            model=model,
-            image=image_tensor,
-            caption=pack.caption,
-            box_threshold=pack.box_threshold,
-            text_threshold=pack.text_threshold,
-            device=device,
-        )
-        if boxes is None or len(boxes) == 0:
-            continue
-
-        if not isinstance(boxes, torch.Tensor):
-            boxes = torch.as_tensor(boxes, dtype=torch.float32)
-        if not isinstance(logits, torch.Tensor):
-            logits = torch.as_tensor(logits, dtype=torch.float32)
-        if boxes.ndim == 1:
-            boxes = boxes.unsqueeze(0)
-        if logits.ndim == 0:
-            logits = logits.unsqueeze(0)
-
-        boxes = boxes.detach().cpu().float()
-        logits = logits.detach().cpu().float()
-        boxes_xyxy = boxes_cxcywh_to_xyxy(boxes).clamp(0.0, 1.0)
-
+    def append_pack_results(
+        pack: PromptPack,
+        boxes_xyxy: torch.Tensor,
+        logits: torch.Tensor,
+        phrases: Sequence[Any],
+    ) -> None:
         for idx in range(boxes_xyxy.shape[0]):
             phrase = normalize_phrase(str(phrases[idx]))
             token = map_phrase_to_token(phrase)
@@ -694,6 +877,129 @@ def run_packs_for_frame(
                     "raw_phrase": phrase,
                 }
             )
+
+    if backend == "official":
+        for pack in prompt_packs:
+            boxes, logits, phrases = gdino_predict(
+                model=model_impl,
+                image=image_tensor,
+                caption=pack.caption,
+                box_threshold=pack.box_threshold,
+                text_threshold=pack.text_threshold,
+                device=device,
+            )
+            if boxes is None or len(boxes) == 0:
+                continue
+
+            if not isinstance(boxes, torch.Tensor):
+                boxes = torch.as_tensor(boxes, dtype=torch.float32)
+            if not isinstance(logits, torch.Tensor):
+                logits = torch.as_tensor(logits, dtype=torch.float32)
+            if boxes.ndim == 1:
+                boxes = boxes.unsqueeze(0)
+            if logits.ndim == 0:
+                logits = logits.unsqueeze(0)
+
+            boxes = boxes.detach().cpu().float()
+            logits = logits.detach().cpu().float()
+            boxes_xyxy = boxes_cxcywh_to_xyxy(boxes).clamp(0.0, 1.0)
+            append_pack_results(pack, boxes_xyxy, logits, phrases)
+        return image_source, proposals
+
+    processor = model.get("processor")
+    if processor is None:
+        raise ValueError("HF backend requires a processor in model bundle.")
+    hf_pack_batch = bool(model.get("hf_pack_batch", True))
+    hf_dtype_name = str(model.get("hf_dtype", "auto"))
+    hf_amp_dtype = resolve_hf_torch_dtype(device=device, hf_dtype=hf_dtype_name)
+    norm = torch.tensor(
+        [pil_image.width, pil_image.height, pil_image.width, pil_image.height],
+        dtype=torch.float32,
+    )
+    target_hw = (pil_image.height, pil_image.width)
+    pack_items: List[Tuple[PromptPack, List[str]]] = []
+    for pack in prompt_packs:
+        labels = [
+            normalize_phrase(x)
+            for x in str(pack.caption).split(".")
+            if normalize_phrase(x)
+        ]
+        pack_items.append((pack, labels))
+
+    if hf_pack_batch:
+        grouped: Dict[Tuple[float, float], List[Tuple[PromptPack, List[str]]]] = defaultdict(list)
+        for item in pack_items:
+            p = item[0]
+            grouped[(float(p.box_threshold), float(p.text_threshold))].append(item)
+        grouped_items = [grouped[k] for k in sorted(grouped.keys())]
+    else:
+        grouped_items = [[item] for item in pack_items]
+
+    for group in grouped_items:
+        sample_pack = group[0][0]
+        group_box_th = float(sample_pack.box_threshold)
+        group_text_th = float(sample_pack.text_threshold)
+        captions = [item[0].caption for item in group]
+        text_labels_batch = [item[1] for item in group]
+        images_batch = [pil_image] * len(group)
+
+        inputs = processor(
+            images=images_batch,
+            text=captions,
+            return_tensors="pt",
+            padding=True,
+        )
+        inputs = {
+            k: (v.to(device) if torch.is_tensor(v) else v)
+            for k, v in inputs.items()
+        }
+        with torch.inference_mode():
+            with build_hf_autocast_context(device=device, amp_dtype=hf_amp_dtype):
+                outputs = model_impl(**inputs)
+
+        target_sizes = [target_hw] * len(group)
+        try:
+            results = processor.post_process_grounded_object_detection(
+                outputs,
+                inputs["input_ids"],
+                box_threshold=group_box_th,
+                text_threshold=group_text_th,
+                target_sizes=target_sizes,
+                text_labels=text_labels_batch,
+            )
+        except TypeError:
+            # transformers>=4.57 uses `threshold` instead of `box_threshold`.
+            results = processor.post_process_grounded_object_detection(
+                outputs,
+                inputs["input_ids"],
+                threshold=group_box_th,
+                text_threshold=group_text_th,
+                target_sizes=target_sizes,
+                text_labels=text_labels_batch,
+            )
+
+        for (pack, _), result in zip(group, results):
+            boxes = result.get("boxes")
+            if boxes is None or len(boxes) == 0:
+                continue
+            logits = result.get("scores")
+            phrases = result.get("text_labels")
+            if phrases is None:
+                phrases = result.get("labels")
+
+            if not isinstance(boxes, torch.Tensor):
+                boxes = torch.as_tensor(boxes, dtype=torch.float32)
+            if not isinstance(logits, torch.Tensor):
+                logits = torch.as_tensor(logits, dtype=torch.float32)
+            if boxes.ndim == 1:
+                boxes = boxes.unsqueeze(0)
+            if logits.ndim == 0:
+                logits = logits.unsqueeze(0)
+
+            boxes = boxes.detach().cpu().float()
+            logits = logits.detach().cpu().float()
+            boxes_xyxy = (boxes / norm).clamp(0.0, 1.0)
+            append_pack_results(pack, boxes_xyxy, logits, phrases)
     return image_source, proposals
 
 
@@ -1243,8 +1549,11 @@ def main() -> None:
     print(f"[1/6] Loading person tracks from: {person_tracks_path}")
     person_tracks = load_person_tracks(person_tracks_path)
 
-    print(f"[2/6] Loading GroundingDINO model on device={args.device} ...")
-    model = load_model(args.config_path, args.checkpoint_path, device=args.device)
+    print(
+        f"[2/6] Loading GroundingDINO backend={args.backend} "
+        f"on device={args.device} ..."
+    )
+    model = load_detector_from_args(args)
 
     print(f"[3/6] Scanning clips under: {data_root}")
     clips, frame_keys = collect_clips(data_root)
@@ -1444,8 +1753,15 @@ def main() -> None:
             "output_pkl": str(output_pkl),
             "output_meta": str(output_meta),
             "vis_dir": str(args.vis_dir) if args.vis_dir else "",
+            "backend": args.backend,
+            "device": args.device,
             "config_path": args.config_path,
             "checkpoint_path": args.checkpoint_path,
+            "hf_model_id": args.hf_model_id,
+            "hf_cache_dir": args.hf_cache_dir,
+            "hf_dtype": args.hf_dtype,
+            "hf_pack_batch": bool(args.hf_pack_batch),
+            "hf_compile": bool(args.hf_compile),
             "person_tracks_pkl": str(person_tracks_path),
         },
         "prompt_packs": [
