@@ -109,9 +109,32 @@ def read_dataset(args):
                 f"Neither track pkl nor json exists. Checked pkl: {tracks_pkl_path}, json: {tracks_json_path}"
             )
 
+        use_olic = bool(getattr(args, 'use_olic', False))
+        object_tracks = None
+        if use_olic:
+            object_tracks_pkl = getattr(args, 'object_tracks_pkl', '')
+            if not object_tracks_pkl:
+                object_tracks_pkl = os.path.join(data_path, 'object_tracks_gdino_swinb.pkl')
+            if not os.path.exists(object_tracks_pkl):
+                raise FileNotFoundError(
+                    f"use_olic=True but object track pkl not found: {object_tracks_pkl}"
+                )
+            print(f"    Loading object tracks from: {object_tracks_pkl}")
+            object_tracks = pickle.load(open(object_tracks_pkl, 'rb'))
+            if not isinstance(object_tracks, dict):
+                raise TypeError(
+                    f"object_tracks_pkl should be dict, got {type(object_tracks)} from {object_tracks_pkl}"
+                )
+
         print(f"    Creating dataset objects...")
-        train_set = CafeDataset(train_frames, train_data, all_tracks, data_path, args, is_training=True)
-        test_set = CafeDataset(test_frames, test_data, all_tracks, data_path, args, is_training=False)
+        train_set = CafeDataset(
+            train_frames, train_data, all_tracks, data_path, args,
+            is_training=True, object_tracks=object_tracks,
+        )
+        test_set = CafeDataset(
+            test_frames, test_data, all_tracks, data_path, args,
+            is_training=False, object_tracks=object_tracks,
+        )
     else:
         assert False
 

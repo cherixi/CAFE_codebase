@@ -87,6 +87,27 @@ parser.add_argument('--temporal_agg_mode', default='learned_pool', type=str,
                     choices=['learned_pool', 'frame_mean_main'],
                     help='temporal aggregation mode: learned pooling (default) or main-style frame mean ablation')
 
+# OLIC (Object-Conditioned Local Interaction Conditioner)
+olic_group = parser.add_mutually_exclusive_group()
+olic_group.add_argument('--use_olic', dest='use_olic', action='store_true',
+                        help='enable OLIC object-conditioned branch')
+olic_group.add_argument('--no_olic', dest='use_olic', action='store_false',
+                        help='disable OLIC object-conditioned branch')
+parser.set_defaults(use_olic=True)
+parser.add_argument('--object_tracks_pkl', default='', type=str,
+                    help='path to object track pkl; default: <data_path>/cafe/object_tracks_gdino_swinb.pkl')
+parser.add_argument('--num_object_boxes', default=10, type=int, help='fixed number of object boxes per frame')
+parser.add_argument('--olic_topk_obj', default=6, type=int, help='top-k objects per actor for relevance pruning')
+parser.add_argument('--olic_dropout', default=-1.0, type=float,
+                    help='dropout for OLIC residual branch; <0 means use drop_rate')
+parser.add_argument('--olic_use_ffn', action='store_true',
+                    help='enable optional OLIC FFN residual block')
+parser.add_argument('--olic_ffn_scale_init', default=0.0, type=float,
+                    help='initial residual scale gamma for optional OLIC FFN')
+parser.add_argument('--olic_score_use', default='prune_relevance', type=str,
+                    choices=['prune_relevance'],
+                    help='how detector score is used in OLIC (v1 fixed to prune_relevance)')
+
 # Loss option
 parser.add_argument('--temperature', default=0.2, type=float, help='consistency loss temperature')
 
@@ -203,6 +224,9 @@ def main():
         args.mae_dim = 1408 if args.mae_version == 'v2' else 768
     else:
         args.mae_dim = 0
+
+    if args.olic_dropout < 0:
+        args.olic_dropout = args.drop_rate
 
     # set random seed
     random.seed(args.random_seed)
@@ -420,11 +444,24 @@ def train(train_loader, model, criterion, optimizer, epoch):
         if args.use_mae and 'mae_feats' in targets[0]:
              mae_feats = torch.stack([t['mae_feats'] for t in targets])
 
+        object_boxes_xyxy = None
+        object_valid_mask = None
+        object_scores = None
+        if args.use_olic and 'object_boxes_xyxy' in targets[0]:
+            object_boxes_xyxy = torch.stack([t['object_boxes_xyxy'] for t in targets])
+            object_valid_mask = torch.stack([t['object_valid_mask'] for t in targets])
+            object_scores = torch.stack([t['object_scores'] for t in targets])
+
         num_batch = images.shape[0]
         num_frame = images.shape[1]
 
         # compute output
-        outputs = model(images, boxes, dummy_mask, mae_feats)
+        outputs = model(
+            images, boxes, dummy_mask, mae_feats,
+            object_boxes_xyxy=object_boxes_xyxy,
+            object_valid_mask=object_valid_mask,
+            object_scores=object_scores,
+        )
 
         loss_dict = criterion(outputs, targets, log=False)
         weight_dict = criterion.weight_dict
@@ -495,8 +532,21 @@ def validate(test_loader, model, criterion, metrics, epoch):
         if args.use_mae and 'mae_feats' in targets[0]:
              mae_feats = torch.stack([t['mae_feats'] for t in targets])
 
+        object_boxes_xyxy = None
+        object_valid_mask = None
+        object_scores = None
+        if args.use_olic and 'object_boxes_xyxy' in targets[0]:
+            object_boxes_xyxy = torch.stack([t['object_boxes_xyxy'] for t in targets])
+            object_valid_mask = torch.stack([t['object_valid_mask'] for t in targets])
+            object_scores = torch.stack([t['object_scores'] for t in targets])
+
         # compute output
-        outputs = model(images, boxes, dummy_mask, mae_feats)
+        outputs = model(
+            images, boxes, dummy_mask, mae_feats,
+            object_boxes_xyxy=object_boxes_xyxy,
+            object_valid_mask=object_valid_mask,
+            object_scores=object_scores,
+        )
 
         loss_dict = criterion(outputs, targets)
         weight_dict = criterion.weight_dict

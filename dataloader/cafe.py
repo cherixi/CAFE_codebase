@@ -142,14 +142,17 @@ def cafe_all_frames(labels):
 
 
 class CafeDataset(data.Dataset):
-    def __init__(self, frames, anns, tracks, image_path, args, is_training=True):
+    def __init__(self, frames, anns, tracks, image_path, args, is_training=True, object_tracks=None):
         super(CafeDataset, self).__init__()
         self.frames = frames
         self.anns = anns
         self.tracks = tracks
+        self.object_tracks = object_tracks
         self.image_path = image_path
         self.image_size = (args.image_width, args.image_height)
         self.num_boxes = args.num_boxes
+        self.use_olic = bool(getattr(args, 'use_olic', False))
+        self.num_object_boxes = int(getattr(args, 'num_object_boxes', 10))
         self.random_sampling = args.random_sampling
         self.num_frame = args.num_frame
         self.num_class = args.num_class
@@ -162,6 +165,75 @@ class CafeDataset(data.Dataset):
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         ])
+
+    def _get_object_frame_rows(self, vid, cid, fid):
+        if self.object_tracks is None:
+            return np.zeros((0, 10), dtype=np.float32)
+        clip_tracks = self.object_tracks.get((vid, cid))
+        if clip_tracks is None:
+            return np.zeros((0, 10), dtype=np.float32)
+
+        if isinstance(clip_tracks, dict):
+            rows = clip_tracks.get(fid, [])
+        elif isinstance(clip_tracks, list):
+            if fid < 0 or fid >= len(clip_tracks):
+                rows = []
+            else:
+                rows = clip_tracks[fid]
+        else:
+            rows = []
+
+        if rows is None or len(rows) == 0:
+            return np.zeros((0, 10), dtype=np.float32)
+
+        arr = np.asarray(rows, dtype=np.float32)
+        if arr.ndim == 1:
+            arr = arr.reshape(1, -1)
+        if arr.ndim != 2:
+            return np.zeros((0, 10), dtype=np.float32)
+        return arr
+
+    def _parse_object_rows(self, vid, cid, fid):
+        m = self.num_object_boxes
+        boxes = np.zeros((m, 4), dtype=np.float32)      # normalized xyxy
+        valid = np.zeros((m,), dtype=np.float32)
+        scores = np.zeros((m,), dtype=np.float32)
+        token_ids = np.zeros((m,), dtype=np.int64)
+        family_ids = np.zeros((m,), dtype=np.int64)
+
+        rows = self._get_object_frame_rows(vid, cid, fid)
+        if rows.shape[0] == 0:
+            return boxes, valid, scores, token_ids, family_ids
+
+        take = min(rows.shape[0], m)
+        for i in range(take):
+            row = rows[i]
+            if row.shape[0] < 5:
+                continue
+            x1 = float(row[1])
+            y1 = float(row[2])
+            x2 = float(row[3])
+            y2 = float(row[4])
+            x1, x2 = min(x1, x2), max(x1, x2)
+            y1, y2 = min(y1, y2), max(y1, y2)
+            x1 = max(0.0, min(1.0, x1))
+            y1 = max(0.0, min(1.0, y1))
+            x2 = max(0.0, min(1.0, x2))
+            y2 = max(0.0, min(1.0, y2))
+            if x2 <= x1 or y2 <= y1:
+                continue
+
+            row_valid = float(row[9]) if row.shape[0] >= 10 else 1.0
+            if row_valid <= 0.5:
+                continue
+
+            boxes[i] = np.array([x1, y1, x2, y2], dtype=np.float32)
+            valid[i] = 1.0
+            scores[i] = float(row[5]) if row.shape[0] >= 6 else 0.0
+            family_ids[i] = int(row[6]) if row.shape[0] >= 7 else 0
+            token_ids[i] = int(row[8]) if row.shape[0] >= 9 else 0
+
+        return boxes, valid, scores, token_ids, family_ids
 
     def __getitem__(self, idx):
         if self.num_frame == 1:
@@ -213,6 +285,8 @@ class CafeDataset(data.Dataset):
 
     def load_samples(self, frames):
         images, boxes, gt_boxes, actions, activities, members, membership = [], [], [], [], [], [], []
+        object_boxes_xyxy, object_valid_mask, object_scores = [], [], []
+        object_token_id, object_family_id = [], []
         targets = {}
         fids = []
 
@@ -262,6 +336,16 @@ class CafeDataset(data.Dataset):
             if len(membership) != self.num_boxes:
                 membership[-1] = torch.cat((membership[-1], torch.tensor((self.num_boxes - len(membership[-1])) * [-1])))
 
+            if self.use_olic:
+                obj_boxes, obj_valid, obj_score, obj_token, obj_family = self._parse_object_rows(
+                    vid=vid, cid=cid, fid=fid
+                )
+                object_boxes_xyxy.append(obj_boxes)
+                object_valid_mask.append(obj_valid)
+                object_scores.append(obj_score)
+                object_token_id.append(obj_token)
+                object_family_id.append(obj_family)
+
         images = torch.stack(images)
         boxes = np.vstack(boxes).reshape([self.num_frame, -1, 4])
         gt_boxes = np.vstack(gt_boxes).reshape([self.num_frame, -1, 4])
@@ -284,6 +368,23 @@ class CafeDataset(data.Dataset):
         targets['gt_boxes'] = gt_boxes
         targets['members'] = members
         targets['membership'] = membership
+
+        if self.use_olic:
+            targets['object_boxes_xyxy'] = torch.from_numpy(
+                np.stack(object_boxes_xyxy, axis=0).astype(np.float32)
+            )
+            targets['object_valid_mask'] = torch.from_numpy(
+                np.stack(object_valid_mask, axis=0).astype(np.float32)
+            )
+            targets['object_scores'] = torch.from_numpy(
+                np.stack(object_scores, axis=0).astype(np.float32)
+            )
+            targets['object_token_id'] = torch.from_numpy(
+                np.stack(object_token_id, axis=0).astype(np.int64)
+            )
+            targets['object_family_id'] = torch.from_numpy(
+                np.stack(object_family_id, axis=0).astype(np.int64)
+            )
 
         if self.use_mae and self.videomae_feats_path:
             feat_path = os.path.join(self.videomae_feats_path, f'{vid}_{cid}.npy')
