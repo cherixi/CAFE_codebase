@@ -7,6 +7,34 @@ from .cafe import *
 import pickle
 import os
 import json
+import sys
+
+
+def _load_pickle_compat(pkl_path):
+    """
+    Load pickle with a small compatibility shim for numpy internal module path
+    changes (e.g. numpy._core.numeric vs numpy.core.numeric).
+    """
+    try:
+        with open(pkl_path, 'rb') as f:
+            return pickle.load(f)
+    except ModuleNotFoundError as e:
+        msg = str(e)
+        if "numpy._core" not in msg:
+            raise
+
+        # Compatibility fallback for pickles produced in a different numpy major version.
+        import numpy as np
+
+        try:
+            sys.modules.setdefault("numpy._core", np.core)
+            if hasattr(np.core, "numeric"):
+                sys.modules.setdefault("numpy._core.numeric", np.core.numeric)
+        except Exception:
+            raise e
+
+        with open(pkl_path, 'rb') as f:
+            return pickle.load(f)
 
 TRAIN_CAFE_P = ['1', '2', '3', '4', '9', '10', '11', '12', '17', '18', '19', '20', '21', '22', '23', '24']
 VAL_CAFE_P = ['13', '14', '15', '16']
@@ -98,7 +126,7 @@ def read_dataset(args):
         # Priority: pkl first, then json fallback.
         if os.path.exists(tracks_pkl_path):
             print(f"    Loading actor tracklets from: {tracks_pkl_path}")
-            all_tracks = pickle.load(open(tracks_pkl_path, 'rb'))
+            all_tracks = _load_pickle_compat(tracks_pkl_path)
             print(f"    Tracklets loaded (pkl)")
         elif os.path.exists(tracks_json_path):
             print(f"    pkl not found, fallback to json: {tracks_json_path}")
@@ -120,7 +148,7 @@ def read_dataset(args):
                     f"use_olic=True but object track pkl not found: {object_tracks_pkl}"
                 )
             print(f"    Loading object tracks from: {object_tracks_pkl}")
-            object_tracks = pickle.load(open(object_tracks_pkl, 'rb'))
+            object_tracks = _load_pickle_compat(object_tracks_pkl)
             if not isinstance(object_tracks, dict):
                 raise TypeError(
                     f"object_tracks_pkl should be dict, got {type(object_tracks)} from {object_tracks_pkl}"
