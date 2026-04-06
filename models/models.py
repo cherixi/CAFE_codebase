@@ -92,6 +92,8 @@ class GADTR(nn.Module):
         self.olic_dropout_p = float(getattr(args, 'olic_dropout', args.drop_rate))
         self.olic_use_ffn = bool(getattr(args, 'olic_use_ffn', False))
         self.olic_score_use = getattr(args, 'olic_score_use', 'prune_relevance')
+        self.olic_res_scale_init = float(getattr(args, 'olic_res_scale_init', 0.0))
+        self.olic_gate_init_bias = float(getattr(args, 'olic_gate_init_bias', -4.0))
 
         if self.use_olic:
             # Object tokenization uses the same RoIAlign config as actor path.
@@ -119,6 +121,13 @@ class GADTR(nn.Module):
             self.olic_gate_actor = MLP(2 * self.hidden_dim, self.hidden_dim, 1, 2)
             self.olic_gate_group = MLP(2 * self.hidden_dim, self.hidden_dim, 1, 2)
             self.olic_drop = nn.Dropout(p=self.olic_dropout_p)
+            # Learnable residual scaling for stable cold start.
+            self.olic_actor_res_scale = nn.Parameter(
+                torch.tensor(self.olic_res_scale_init, dtype=torch.float32)
+            )
+            self.olic_group_res_scale = nn.Parameter(
+                torch.tensor(self.olic_res_scale_init, dtype=torch.float32)
+            )
 
             # Optional FFN block with zero-initialized residual scale.
             if self.olic_use_ffn:
@@ -164,6 +173,13 @@ class GADTR(nn.Module):
                     nn.init.kaiming_normal_(m.weight)
                     if m.bias is not None:
                         nn.init.zeros_(m.bias)
+
+        # Apply gate bias init after generic module init to avoid being overwritten.
+        if self.use_olic:
+            if self.olic_gate_actor.layers[-1].bias is not None:
+                nn.init.constant_(self.olic_gate_actor.layers[-1].bias, self.olic_gate_init_bias)
+            if self.olic_gate_group.layers[-1].bias is not None:
+                nn.init.constant_(self.olic_gate_group.layers[-1].bias, self.olic_gate_init_bias)
 
     def calculate_pairwise_distnace(self, boxes):
         bs = boxes.shape[0]
@@ -347,6 +363,7 @@ class GADTR(nn.Module):
         object_boxes_xyxy=None,
         object_valid_mask=None,
         object_scores=None,
+        olic_warmup_scale=1.0,
     ):
         """
         :param x: [B, T, 3, H, W]
@@ -456,6 +473,7 @@ class GADTR(nn.Module):
             and object_valid_mask is not None
             and object_scores is not None
         ):
+            olic_scale = float(max(0.0, min(1.0, olic_warmup_scale)))
             actor_valid_bt = (~dummy_mask).reshape(bs * t, n)
             c_actor, c_group, alpha_o, beta_o = self._run_olic(
                 features=features,
@@ -470,8 +488,8 @@ class GADTR(nn.Module):
                 ow=ow,
             )
 
-            actor_hs = actor_hs + self.olic_drop(alpha_o * c_actor)
-            group_hs = group_hs + self.olic_drop(beta_o * c_group)
+            actor_hs = actor_hs + olic_scale * self.olic_actor_res_scale * self.olic_drop(alpha_o * c_actor)
+            group_hs = group_hs + olic_scale * self.olic_group_res_scale * self.olic_drop(beta_o * c_group)
 
             if self.olic_use_ffn:
                 actor_hs = actor_hs + self.olic_actor_ffn_scale * self.olic_actor_ffn(
@@ -480,6 +498,12 @@ class GADTR(nn.Module):
                 group_hs = group_hs + self.olic_group_ffn_scale * self.olic_group_ffn(
                     self.olic_group_ffn_norm(group_hs)
                 )
+            olic_alpha_mean = alpha_o.mean()
+            olic_beta_mean = beta_o.mean()
+        else:
+            olic_alpha_mean = actor_hs.new_tensor(0.0)
+            olic_beta_mean = actor_hs.new_tensor(0.0)
+            olic_scale = float(max(0.0, min(1.0, olic_warmup_scale)))
 
         if self.temporal_agg_mode == 'frame_mean_main':
             # Main-branch style ablation:
@@ -525,6 +549,9 @@ class GADTR(nn.Module):
             "pred_activities": outputs_group_class,
             "membership": membership.reshape(bs, self.num_group_tokens, self.num_boxes),
             "actor_embeddings": inst_repr,
+            "olic_alpha_mean": olic_alpha_mean,
+            "olic_beta_mean": olic_beta_mean,
+            "olic_warmup_scale": inst_repr.new_tensor(olic_scale),
         }
 
         return out

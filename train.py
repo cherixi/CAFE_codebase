@@ -107,6 +107,12 @@ parser.add_argument('--olic_ffn_scale_init', default=0.0, type=float,
 parser.add_argument('--olic_score_use', default='prune_relevance', type=str,
                     choices=['prune_relevance'],
                     help='how detector score is used in OLIC (v1 fixed to prune_relevance)')
+parser.add_argument('--olic_res_scale_init', default=0.0, type=float,
+                    help='initial residual scale gamma for OLIC residual fusion')
+parser.add_argument('--olic_gate_init_bias', default=-4.0, type=float,
+                    help='initial bias for OLIC gate heads (negative keeps gates near closed at start)')
+parser.add_argument('--olic_warmup_epochs', default=5, type=int,
+                    help='linear warmup epochs for OLIC branch scale')
 
 # Loss option
 parser.add_argument('--temperature', default=0.2, type=float, help='consistency loss temperature')
@@ -227,6 +233,24 @@ def main():
 
     if args.olic_dropout < 0:
         args.olic_dropout = args.drop_rate
+    if args.olic_warmup_epochs < 0:
+        args.olic_warmup_epochs = 0
+
+    if args.use_olic:
+        print_log(save_path, f"----------------------------------------------------------------")
+        print_log(save_path, "OLIC: ENABLED")
+        print_log(
+            save_path,
+            f"OLIC cfg: M={args.num_object_boxes}, topk={args.olic_topk_obj}, "
+            f"dropout={args.olic_dropout}, score_use={args.olic_score_use}, "
+            f"res_scale_init={args.olic_res_scale_init}, gate_init_bias={args.olic_gate_init_bias}, "
+            f"warmup_epochs={args.olic_warmup_epochs}"
+        )
+        print_log(save_path, f"----------------------------------------------------------------")
+    else:
+        print_log(save_path, f"----------------------------------------------------------------")
+        print_log(save_path, "OLIC: DISABLED")
+        print_log(save_path, f"----------------------------------------------------------------")
 
     # set random seed
     random.seed(args.random_seed)
@@ -359,6 +383,19 @@ def main():
         
         print_log(save_path, 'Loss: %.4f' % (train_log['loss']))
         print_log(save_path, 'Group class error: %.2f' % (train_log['group_class_error']))
+        if args.use_olic and 'olic_alpha_mean' in train_log:
+            print_log(
+                save_path,
+                "OLIC(train): warmup=%.3f alpha=%.4f beta=%.4f no_group=%.4f res_a=%.4f res_g=%.4f"
+                % (
+                    train_log.get('olic_warmup_scale', 1.0),
+                    train_log.get('olic_alpha_mean', 0.0),
+                    train_log.get('olic_beta_mean', 0.0),
+                    train_log.get('olic_no_group_ratio', 0.0),
+                    train_log.get('olic_res_actor', 0.0),
+                    train_log.get('olic_res_group', 0.0),
+                )
+            )
         print('Current learning rate is %f' % scheduler.get_last_lr()[0])
         scheduler.step()
 
@@ -370,6 +407,19 @@ def main():
             test_log, result = validate(test_loader, model, criterion, metrics, epoch)
             print_log(save_path, 'Loss: %.4f' % (test_log['loss']))
             print_log(save_path, 'Group class error: %.2f' % (test_log['group_class_error']))
+            if args.use_olic and 'olic_alpha_mean' in test_log:
+                print_log(
+                    save_path,
+                    "OLIC(test): warmup=%.3f alpha=%.4f beta=%.4f no_group=%.4f res_a=%.4f res_g=%.4f"
+                    % (
+                        test_log.get('olic_warmup_scale', 1.0),
+                        test_log.get('olic_alpha_mean', 0.0),
+                        test_log.get('olic_beta_mean', 0.0),
+                        test_log.get('olic_no_group_ratio', 0.0),
+                        test_log.get('olic_res_actor', 0.0),
+                        test_log.get('olic_res_group', 0.0),
+                    )
+                )
             print_log(save_path, "group mAP at 1.0: %.2f" % result['group_mAP_1.0'])
             print_log(save_path, "group mAP at 0.5: %.2f" % result['group_mAP_0.5'])
             print_log(save_path, "outlier mIoU: %.2f" % result['outlier_mIoU'])
@@ -420,6 +470,15 @@ def main():
     print_log(save_path, f"Saved final checkpoint: {last_path}")
 
 
+def get_olic_warmup_scale(epoch: int, args) -> float:
+    if not getattr(args, 'use_olic', False):
+        return 0.0
+    warmup_epochs = int(getattr(args, 'olic_warmup_epochs', 0))
+    if warmup_epochs <= 0:
+        return 1.0
+    return float(min(1.0, max(0.0, epoch / float(warmup_epochs))))
+
+
 def train(train_loader, model, criterion, optimizer, epoch):
     model.train()
     criterion.train()
@@ -431,6 +490,7 @@ def train(train_loader, model, criterion, optimizer, epoch):
     header = 'Epoch [{start_epoch: >{fill}}/{end_epoch}]'.format(start_epoch=epoch, end_epoch=args.epochs,
                                                                  fill=space_fmt)
     print_freq = len(train_loader)
+    olic_warmup_scale = get_olic_warmup_scale(epoch, args)
 
     for i, (images, targets, infos) in enumerate(metric_logger.log_every(train_loader, print_freq, header)):
         images = images.cuda()  # [B, T, 3, H, W]
@@ -461,6 +521,7 @@ def train(train_loader, model, criterion, optimizer, epoch):
             object_boxes_xyxy=object_boxes_xyxy,
             object_valid_mask=object_valid_mask,
             object_scores=object_scores,
+            olic_warmup_scale=olic_warmup_scale,
         )
 
         loss_dict = criterion(outputs, targets, log=False)
@@ -497,6 +558,21 @@ def train(train_loader, model, criterion, optimizer, epoch):
         gce = loss_dict_reduced['group_class_error']
         metric_logger.update(group_class_error=(gce.item() if isinstance(gce, torch.Tensor) else gce))
         metric_logger.update(lr=optimizer.param_groups[0]["lr"])
+        if args.use_olic and 'olic_alpha_mean' in outputs:
+            metric_logger.update(
+                olic_alpha_mean=float(outputs['olic_alpha_mean'].mean().item()),
+                olic_beta_mean=float(outputs['olic_beta_mean'].mean().item()),
+                olic_warmup_scale=float(outputs['olic_warmup_scale'].mean().item()),
+            )
+            pred_group_idx = outputs['pred_activities'].argmax(dim=-1)
+            no_group_ratio = (pred_group_idx == args.num_class).float().mean()
+            metric_logger.update(olic_no_group_ratio=float(no_group_ratio.item()))
+            module_ref = model.module if hasattr(model, 'module') else model
+            if hasattr(module_ref, 'olic_actor_res_scale'):
+                metric_logger.update(
+                    olic_res_actor=float(module_ref.olic_actor_res_scale.detach().item()),
+                    olic_res_group=float(module_ref.olic_group_res_scale.detach().item()),
+                )
         
         # 显式删除大对象，帮助 GC 回收
         del images, targets, boxes, clean_boxes, outputs, loss, loss_dict
@@ -517,6 +593,7 @@ def validate(test_loader, model, criterion, metrics, epoch):
     header = 'Evaluation Inference: '
 
     print_freq = len(test_loader)
+    olic_warmup_scale = get_olic_warmup_scale(epoch, args)
     name_to_vid = {name: i + 1 for i, name in enumerate(SEQS_CAFE)}
     file_path = path + '/pred_group_epoch_%d.txt' % epoch
 
@@ -546,6 +623,7 @@ def validate(test_loader, model, criterion, metrics, epoch):
             object_boxes_xyxy=object_boxes_xyxy,
             object_valid_mask=object_valid_mask,
             object_scores=object_scores,
+            olic_warmup_scale=olic_warmup_scale,
         )
 
         loss_dict = criterion(outputs, targets)
@@ -562,6 +640,21 @@ def validate(test_loader, model, criterion, metrics, epoch):
                              **loss_dict_reduced_unscaled)
 
         metric_logger.update(group_class_error=loss_dict_reduced['group_class_error'])
+        if args.use_olic and 'olic_alpha_mean' in outputs:
+            metric_logger.update(
+                olic_alpha_mean=float(outputs['olic_alpha_mean'].mean().item()),
+                olic_beta_mean=float(outputs['olic_beta_mean'].mean().item()),
+                olic_warmup_scale=float(outputs['olic_warmup_scale'].mean().item()),
+            )
+            pred_group_idx = outputs['pred_activities'].argmax(dim=-1)
+            no_group_ratio = (pred_group_idx == args.num_class).float().mean()
+            metric_logger.update(olic_no_group_ratio=float(no_group_ratio.item()))
+            module_ref = model.module if hasattr(model, 'module') else model
+            if hasattr(module_ref, 'olic_actor_res_scale'):
+                metric_logger.update(
+                    olic_res_actor=float(module_ref.olic_actor_res_scale.detach().item()),
+                    olic_res_group=float(module_ref.olic_group_res_scale.detach().item()),
+                )
 
         # Keep original coordinates for evaluation alignment.
         make_txt(clean_boxes, infos, outputs, name_to_vid, file_path)

@@ -98,6 +98,12 @@ parser.add_argument('--olic_ffn_scale_init', default=0.0, type=float,
 parser.add_argument('--olic_score_use', default='prune_relevance', type=str,
                     choices=['prune_relevance'],
                     help='how detector score is used in OLIC (v1 fixed to prune_relevance)')
+parser.add_argument('--olic_res_scale_init', default=0.0, type=float,
+                    help='initial residual scale gamma for OLIC residual fusion')
+parser.add_argument('--olic_gate_init_bias', default=-4.0, type=float,
+                    help='initial bias for OLIC gate heads')
+parser.add_argument('--olic_warmup_epochs', default=0, type=int,
+                    help='warmup epochs for OLIC (in test this is typically 0/full)')
 
 # Box noise ablation
 parser.add_argument('--box_noise_policy', default='none', type=str,
@@ -299,6 +305,7 @@ def validate(test_loader, model, criterion, metrics):
             object_boxes_xyxy=object_boxes_xyxy,
             object_valid_mask=object_valid_mask,
             object_scores=object_scores,
+            olic_warmup_scale=1.0,
         )
 
         loss_dict = criterion(outputs, targets)
