@@ -104,7 +104,8 @@ class GADTR(nn.Module):
             self.obj_drop_emb = nn.Dropout(p=args.drop_rate)
             self.obj_box_pos_emb = MLP(4, self.hidden_dim, self.hidden_dim, 3)
 
-            # Relevance pruning: [actor, object, geom6, score1] -> scalar
+            # Legacy relevance head kept for checkpoint compatibility.
+            # Pruning is disabled in the current stable OLIC path.
             self.olic_relevance_mlp = MLP(2 * self.hidden_dim + 7, self.hidden_dim, 1, 3)
 
             # Actor-object routing
@@ -279,7 +280,6 @@ class GADTR(nn.Module):
         obj_cxcywh = self._xyxy_to_cxcywh(obj_xyxy)
 
         obj_valid = object_valid_mask.reshape(bt, m) > 0.5
-        obj_scores_bt = object_scores.reshape(bt, m).clamp(min=0.0)
 
         # Object RoIAlign on the same feature map scale/path as actor RoIAlign.
         obj_pixel = obj_xyxy.clone()
@@ -307,31 +307,40 @@ class GADTR(nn.Module):
             actor_xyxy_bt,
             obj_xyxy,
         )  # [BT, N, M, 6]
-        score_feat = torch.log(obj_scores_bt + 1e-6).unsqueeze(1).unsqueeze(-1).expand(bt, n, m, 1)
-
-        actor_expand = actor_tokens_bt.unsqueeze(2).expand(bt, n, m, self.hidden_dim)
-        obj_expand = obj_features.unsqueeze(1).expand(bt, n, m, self.hidden_dim)
-        rel_in = torch.cat((actor_expand, obj_expand, geom_ao, score_feat), dim=-1)
-        relevance = self.olic_relevance_mlp(rel_in).squeeze(-1)  # [BT, N, M]
-
         rel_valid_mask = actor_valid.unsqueeze(-1) & obj_valid.unsqueeze(1)
-        relevance = relevance.masked_fill(~rel_valid_mask, -1e4)
-        topk = max(1, min(self.olic_topk_obj, m))
-        topk_idx = relevance.topk(k=topk, dim=-1).indices
-        selected_mask = torch.zeros_like(rel_valid_mask, dtype=torch.bool)
-        selected_mask.scatter_(dim=-1, index=topk_idx, value=True)
-        selected_mask = selected_mask & rel_valid_mask
 
         q = self.olic_q_actor(actor_tokens_bt)                          # [BT, N, H]
         k = self.olic_k_obj(obj_features)                               # [BT, M, H]
         v = self.olic_v_obj(obj_features)                               # [BT, M, H]
-        attn_logits = torch.einsum('bnh,bmh->bnm', q, k) / math.sqrt(self.hidden_dim)
+        qk_logits = torch.einsum('bnh,bmh->bnm', q, k) / math.sqrt(self.hidden_dim)
         geom_bias = self.olic_geom_bias_ao(geom_ao).squeeze(-1)
-        attn_logits = attn_logits + geom_bias
+        attn_logits = qk_logits + geom_bias
 
-        attn = self._masked_softmax(attn_logits, selected_mask, dim=-1)
+        # No hard pruning: route over all valid objects with soft attention.
+        attn = self._masked_softmax(attn_logits, rel_valid_mask, dim=-1)
         c_actor = torch.einsum('bnm,bmh->bnh', attn, v)
         c_actor = c_actor * actor_valid.unsqueeze(-1).float()
+
+        # Diagnostics for geometry-vs-content balance and attention collapse checks.
+        valid_pairs_f = rel_valid_mask.float()
+        valid_pairs_count = valid_pairs_f.sum().clamp(min=1.0)
+        qk_mean = (qk_logits * valid_pairs_f).sum() / valid_pairs_count
+        qk_var = ((qk_logits - qk_mean) ** 2 * valid_pairs_f).sum() / valid_pairs_count
+        qk_std = torch.sqrt(qk_var + 1e-12)
+
+        geom_mean = (geom_bias * valid_pairs_f).sum() / valid_pairs_count
+        geom_var = ((geom_bias - geom_mean) ** 2 * valid_pairs_f).sum() / valid_pairs_count
+        geom_std = torch.sqrt(geom_var + 1e-12)
+        geom_qk_ratio = geom_std / (qk_std + 1e-6)
+
+        actor_valid_f = actor_valid.float()
+        valid_actor_count = actor_valid_f.sum().clamp(min=1.0)
+        attn_safe = attn.clamp(min=1e-9)
+        attn_entropy = -(attn * torch.log(attn_safe)).sum(dim=-1)  # [BT, N]
+        attn_entropy_mean = (attn_entropy * actor_valid_f).sum() / valid_actor_count
+        attn_top1 = attn.max(dim=-1).values  # [BT, N]
+        attn_top1_mean = (attn_top1 * actor_valid_f).sum() / valid_actor_count
+        valid_obj_per_actor = (valid_pairs_f.sum(dim=-1) * actor_valid_f).sum() / valid_actor_count
 
         # Group-aware aggregation from actor summaries.
         qg = self.olic_group_query(group_tokens_bt)                     # [BT, K, H]
@@ -352,7 +361,15 @@ class GADTR(nn.Module):
         c_group = c_group.reshape(bs, t, self.num_group_tokens, self.hidden_dim)
         alpha = alpha.reshape(bs, t, n, 1)
         beta = beta.reshape(bs, t, self.num_group_tokens, 1)
-        return c_actor, c_group, alpha, beta
+        diag = {
+            "olic_qk_std": qk_std,
+            "olic_geom_std": geom_std,
+            "olic_geom_qk_ratio": geom_qk_ratio,
+            "olic_attn_entropy": attn_entropy_mean,
+            "olic_attn_top1_mean": attn_top1_mean,
+            "olic_valid_obj_per_actor": valid_obj_per_actor,
+        }
+        return c_actor, c_group, alpha, beta, diag
 
     def forward(
         self,
@@ -475,7 +492,7 @@ class GADTR(nn.Module):
         ):
             olic_scale = float(max(0.0, min(1.0, olic_warmup_scale)))
             actor_valid_bt = (~dummy_mask).reshape(bs * t, n)
-            c_actor, c_group, alpha_o, beta_o = self._run_olic(
+            c_actor, c_group, alpha_o, beta_o, olic_diag = self._run_olic(
                 features=features,
                 actor_boxes_norm=boxes_norm,
                 actor_tokens_for_olic=actor_hs_decoder,
@@ -504,6 +521,14 @@ class GADTR(nn.Module):
             olic_alpha_mean = actor_hs.new_tensor(0.0)
             olic_beta_mean = actor_hs.new_tensor(0.0)
             olic_scale = float(max(0.0, min(1.0, olic_warmup_scale)))
+            olic_diag = {
+                "olic_qk_std": actor_hs.new_tensor(0.0),
+                "olic_geom_std": actor_hs.new_tensor(0.0),
+                "olic_geom_qk_ratio": actor_hs.new_tensor(0.0),
+                "olic_attn_entropy": actor_hs.new_tensor(0.0),
+                "olic_attn_top1_mean": actor_hs.new_tensor(0.0),
+                "olic_valid_obj_per_actor": actor_hs.new_tensor(0.0),
+            }
 
         if self.temporal_agg_mode == 'frame_mean_main':
             # Main-branch style ablation:
@@ -549,9 +574,15 @@ class GADTR(nn.Module):
             "pred_activities": outputs_group_class,
             "membership": membership.reshape(bs, self.num_group_tokens, self.num_boxes),
             "actor_embeddings": inst_repr,
-            "olic_alpha_mean": olic_alpha_mean,
-            "olic_beta_mean": olic_beta_mean,
+            "olic_alpha_mean": olic_alpha_mean.detach(),
+            "olic_beta_mean": olic_beta_mean.detach(),
             "olic_warmup_scale": inst_repr.new_tensor(olic_scale),
+            "olic_qk_std": olic_diag["olic_qk_std"].detach(),
+            "olic_geom_std": olic_diag["olic_geom_std"].detach(),
+            "olic_geom_qk_ratio": olic_diag["olic_geom_qk_ratio"].detach(),
+            "olic_attn_entropy": olic_diag["olic_attn_entropy"].detach(),
+            "olic_attn_top1_mean": olic_diag["olic_attn_top1_mean"].detach(),
+            "olic_valid_obj_per_actor": olic_diag["olic_valid_obj_per_actor"].detach(),
         }
 
         return out

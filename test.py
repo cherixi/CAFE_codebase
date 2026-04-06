@@ -88,7 +88,8 @@ parser.set_defaults(use_olic=True)
 parser.add_argument('--object_tracks_pkl', default='', type=str,
                     help='path to object track pkl; default: <data_path>/cafe/object_tracks_gdino_swinb.pkl')
 parser.add_argument('--num_object_boxes', default=10, type=int, help='fixed number of object boxes per frame')
-parser.add_argument('--olic_topk_obj', default=6, type=int, help='top-k objects per actor for relevance pruning')
+parser.add_argument('--olic_topk_obj', default=6, type=int,
+                    help='(deprecated) top-k objects per actor for relevance pruning; pruning is disabled in current stable path')
 parser.add_argument('--olic_dropout', default=-1.0, type=float,
                     help='dropout for OLIC residual branch; <0 means use drop_rate')
 parser.add_argument('--olic_use_ffn', action='store_true',

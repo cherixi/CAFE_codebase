@@ -97,7 +97,8 @@ parser.set_defaults(use_olic=True)
 parser.add_argument('--object_tracks_pkl', default='', type=str,
                     help='path to object track pkl; default: <data_path>/cafe/object_tracks_gdino_swinb.pkl')
 parser.add_argument('--num_object_boxes', default=10, type=int, help='fixed number of object boxes per frame')
-parser.add_argument('--olic_topk_obj', default=6, type=int, help='top-k objects per actor for relevance pruning')
+parser.add_argument('--olic_topk_obj', default=6, type=int,
+                    help='(deprecated) top-k objects per actor for relevance pruning; pruning is disabled in current stable path')
 parser.add_argument('--olic_dropout', default=-1.0, type=float,
                     help='dropout for OLIC residual branch; <0 means use drop_rate')
 parser.add_argument('--olic_use_ffn', action='store_true',
@@ -244,7 +245,7 @@ def main():
             f"OLIC cfg: M={args.num_object_boxes}, topk={args.olic_topk_obj}, "
             f"dropout={args.olic_dropout}, score_use={args.olic_score_use}, "
             f"res_scale_init={args.olic_res_scale_init}, gate_init_bias={args.olic_gate_init_bias}, "
-            f"warmup_epochs={args.olic_warmup_epochs}"
+            f"warmup_epochs={args.olic_warmup_epochs}, pruning=OFF(soft-routing-all-valid)"
         )
         print_log(save_path, f"----------------------------------------------------------------")
     else:
@@ -386,7 +387,7 @@ def main():
         if args.use_olic and 'olic_alpha_mean' in train_log:
             print_log(
                 save_path,
-                "OLIC(train): warmup=%.3f alpha=%.4f beta=%.4f no_group=%.4f res_a=%.4f res_g=%.4f"
+                "OLIC(train): warmup=%.3f alpha=%.4f beta=%.4f no_group=%.4f res_a=%.4f res_g=%.4f qk_std=%.4f geom_std=%.4f geom/qk=%.4f ent=%.4f top1=%.4f valid_obj=%.2f"
                 % (
                     train_log.get('olic_warmup_scale', 1.0),
                     train_log.get('olic_alpha_mean', 0.0),
@@ -394,6 +395,12 @@ def main():
                     train_log.get('olic_no_group_ratio', 0.0),
                     train_log.get('olic_res_actor', 0.0),
                     train_log.get('olic_res_group', 0.0),
+                    train_log.get('olic_qk_std', 0.0),
+                    train_log.get('olic_geom_std', 0.0),
+                    train_log.get('olic_geom_qk_ratio', 0.0),
+                    train_log.get('olic_attn_entropy', 0.0),
+                    train_log.get('olic_attn_top1_mean', 0.0),
+                    train_log.get('olic_valid_obj_per_actor', 0.0),
                 )
             )
         print('Current learning rate is %f' % scheduler.get_last_lr()[0])
@@ -410,7 +417,7 @@ def main():
             if args.use_olic and 'olic_alpha_mean' in test_log:
                 print_log(
                     save_path,
-                    "OLIC(test): warmup=%.3f alpha=%.4f beta=%.4f no_group=%.4f res_a=%.4f res_g=%.4f"
+                    "OLIC(test): warmup=%.3f alpha=%.4f beta=%.4f no_group=%.4f res_a=%.4f res_g=%.4f qk_std=%.4f geom_std=%.4f geom/qk=%.4f ent=%.4f top1=%.4f valid_obj=%.2f"
                     % (
                         test_log.get('olic_warmup_scale', 1.0),
                         test_log.get('olic_alpha_mean', 0.0),
@@ -418,6 +425,12 @@ def main():
                         test_log.get('olic_no_group_ratio', 0.0),
                         test_log.get('olic_res_actor', 0.0),
                         test_log.get('olic_res_group', 0.0),
+                        test_log.get('olic_qk_std', 0.0),
+                        test_log.get('olic_geom_std', 0.0),
+                        test_log.get('olic_geom_qk_ratio', 0.0),
+                        test_log.get('olic_attn_entropy', 0.0),
+                        test_log.get('olic_attn_top1_mean', 0.0),
+                        test_log.get('olic_valid_obj_per_actor', 0.0),
                     )
                 )
             print_log(save_path, "group mAP at 1.0: %.2f" % result['group_mAP_1.0'])
@@ -564,6 +577,15 @@ def train(train_loader, model, criterion, optimizer, epoch):
                 olic_beta_mean=float(outputs['olic_beta_mean'].mean().item()),
                 olic_warmup_scale=float(outputs['olic_warmup_scale'].mean().item()),
             )
+            if 'olic_qk_std' in outputs:
+                metric_logger.update(
+                    olic_qk_std=float(outputs['olic_qk_std'].mean().item()),
+                    olic_geom_std=float(outputs['olic_geom_std'].mean().item()),
+                    olic_geom_qk_ratio=float(outputs['olic_geom_qk_ratio'].mean().item()),
+                    olic_attn_entropy=float(outputs['olic_attn_entropy'].mean().item()),
+                    olic_attn_top1_mean=float(outputs['olic_attn_top1_mean'].mean().item()),
+                    olic_valid_obj_per_actor=float(outputs['olic_valid_obj_per_actor'].mean().item()),
+                )
             pred_group_idx = outputs['pred_activities'].argmax(dim=-1)
             no_group_ratio = (pred_group_idx == args.num_class).float().mean()
             metric_logger.update(olic_no_group_ratio=float(no_group_ratio.item()))
@@ -646,6 +668,15 @@ def validate(test_loader, model, criterion, metrics, epoch):
                 olic_beta_mean=float(outputs['olic_beta_mean'].mean().item()),
                 olic_warmup_scale=float(outputs['olic_warmup_scale'].mean().item()),
             )
+            if 'olic_qk_std' in outputs:
+                metric_logger.update(
+                    olic_qk_std=float(outputs['olic_qk_std'].mean().item()),
+                    olic_geom_std=float(outputs['olic_geom_std'].mean().item()),
+                    olic_geom_qk_ratio=float(outputs['olic_geom_qk_ratio'].mean().item()),
+                    olic_attn_entropy=float(outputs['olic_attn_entropy'].mean().item()),
+                    olic_attn_top1_mean=float(outputs['olic_attn_top1_mean'].mean().item()),
+                    olic_valid_obj_per_actor=float(outputs['olic_valid_obj_per_actor'].mean().item()),
+                )
             pred_group_idx = outputs['pred_activities'].argmax(dim=-1)
             no_group_ratio = (pred_group_idx == args.num_class).float().mean()
             metric_logger.update(olic_no_group_ratio=float(no_group_ratio.item()))
