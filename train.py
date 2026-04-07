@@ -114,6 +114,12 @@ parser.add_argument('--olic_gate_init_bias', default=-4.0, type=float,
                     help='initial bias for OLIC gate heads (negative keeps gates near closed at start)')
 parser.add_argument('--olic_warmup_epochs', default=5, type=int,
                     help='linear warmup epochs for OLIC branch scale')
+parser.add_argument('--olic_attn_tau', default=2.0, type=float,
+                    help='softmax temperature for actor-object routing (tau>1 makes attention less peaky)')
+parser.add_argument('--olic_geom_scale_init', default=1.0, type=float,
+                    help='initial scale for geometry bias term in OLIC routing')
+parser.add_argument('--olic_geom_scale_max', default=2.0, type=float,
+                    help='maximum geometry scale for OLIC routing (learnable scale is constrained to [0, max])')
 
 # Loss option
 parser.add_argument('--temperature', default=0.2, type=float, help='consistency loss temperature')
@@ -236,6 +242,10 @@ def main():
         args.olic_dropout = args.drop_rate
     if args.olic_warmup_epochs < 0:
         args.olic_warmup_epochs = 0
+    if args.olic_attn_tau <= 0:
+        args.olic_attn_tau = 1.0
+    if args.olic_geom_scale_max <= 0:
+        args.olic_geom_scale_max = 2.0
 
     if args.use_olic:
         print_log(save_path, f"----------------------------------------------------------------")
@@ -245,7 +255,9 @@ def main():
             f"OLIC cfg: M={args.num_object_boxes}, topk={args.olic_topk_obj}, "
             f"dropout={args.olic_dropout}, score_use={args.olic_score_use}, "
             f"res_scale_init={args.olic_res_scale_init}, gate_init_bias={args.olic_gate_init_bias}, "
-            f"warmup_epochs={args.olic_warmup_epochs}, pruning=OFF(soft-routing-all-valid)"
+            f"warmup_epochs={args.olic_warmup_epochs}, pruning=OFF(soft-routing-all-valid), "
+            f"attn_tau={args.olic_attn_tau}, geom_scale_init={args.olic_geom_scale_init}, "
+            f"geom_scale_max={args.olic_geom_scale_max}"
         )
         print_log(save_path, f"----------------------------------------------------------------")
     else:
@@ -387,7 +399,7 @@ def main():
         if args.use_olic and 'olic_alpha_mean' in train_log:
             print_log(
                 save_path,
-                "OLIC(train): warmup=%.3f alpha=%.4f beta=%.4f no_group=%.4f res_a=%.4f res_g=%.4f qk_std=%.4f geom_std=%.4f geom/qk=%.4f ent=%.4f top1=%.4f valid_obj=%.2f"
+                "OLIC(train): warmup=%.3f alpha=%.4f beta=%.4f no_group=%.4f res_a=%.4f res_g=%.4f geom_scale=%.4f qk_std=%.4f geom_std=%.4f geom/qk=%.4f ent=%.4f top1=%.4f valid_obj=%.2f"
                 % (
                     train_log.get('olic_warmup_scale', 1.0),
                     train_log.get('olic_alpha_mean', 0.0),
@@ -395,6 +407,7 @@ def main():
                     train_log.get('olic_no_group_ratio', 0.0),
                     train_log.get('olic_res_actor', 0.0),
                     train_log.get('olic_res_group', 0.0),
+                    train_log.get('olic_geom_scale', 0.0),
                     train_log.get('olic_qk_std', 0.0),
                     train_log.get('olic_geom_std', 0.0),
                     train_log.get('olic_geom_qk_ratio', 0.0),
@@ -417,7 +430,7 @@ def main():
             if args.use_olic and 'olic_alpha_mean' in test_log:
                 print_log(
                     save_path,
-                    "OLIC(test): warmup=%.3f alpha=%.4f beta=%.4f no_group=%.4f res_a=%.4f res_g=%.4f qk_std=%.4f geom_std=%.4f geom/qk=%.4f ent=%.4f top1=%.4f valid_obj=%.2f"
+                    "OLIC(test): warmup=%.3f alpha=%.4f beta=%.4f no_group=%.4f res_a=%.4f res_g=%.4f geom_scale=%.4f qk_std=%.4f geom_std=%.4f geom/qk=%.4f ent=%.4f top1=%.4f valid_obj=%.2f"
                     % (
                         test_log.get('olic_warmup_scale', 1.0),
                         test_log.get('olic_alpha_mean', 0.0),
@@ -425,6 +438,7 @@ def main():
                         test_log.get('olic_no_group_ratio', 0.0),
                         test_log.get('olic_res_actor', 0.0),
                         test_log.get('olic_res_group', 0.0),
+                        test_log.get('olic_geom_scale', 0.0),
                         test_log.get('olic_qk_std', 0.0),
                         test_log.get('olic_geom_std', 0.0),
                         test_log.get('olic_geom_qk_ratio', 0.0),
@@ -579,6 +593,7 @@ def train(train_loader, model, criterion, optimizer, epoch):
             )
             if 'olic_qk_std' in outputs:
                 metric_logger.update(
+                    olic_geom_scale=float(outputs['olic_geom_scale'].mean().item()),
                     olic_qk_std=float(outputs['olic_qk_std'].mean().item()),
                     olic_geom_std=float(outputs['olic_geom_std'].mean().item()),
                     olic_geom_qk_ratio=float(outputs['olic_geom_qk_ratio'].mean().item()),
@@ -670,6 +685,7 @@ def validate(test_loader, model, criterion, metrics, epoch):
             )
             if 'olic_qk_std' in outputs:
                 metric_logger.update(
+                    olic_geom_scale=float(outputs['olic_geom_scale'].mean().item()),
                     olic_qk_std=float(outputs['olic_qk_std'].mean().item()),
                     olic_geom_std=float(outputs['olic_geom_std'].mean().item()),
                     olic_geom_qk_ratio=float(outputs['olic_geom_qk_ratio'].mean().item()),

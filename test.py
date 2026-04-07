@@ -105,6 +105,12 @@ parser.add_argument('--olic_gate_init_bias', default=-4.0, type=float,
                     help='initial bias for OLIC gate heads')
 parser.add_argument('--olic_warmup_epochs', default=0, type=int,
                     help='warmup epochs for OLIC (in test this is typically 0/full)')
+parser.add_argument('--olic_attn_tau', default=2.0, type=float,
+                    help='softmax temperature for actor-object routing')
+parser.add_argument('--olic_geom_scale_init', default=1.0, type=float,
+                    help='initial scale for geometry bias term in OLIC routing')
+parser.add_argument('--olic_geom_scale_max', default=2.0, type=float,
+                    help='maximum geometry scale for OLIC routing')
 
 # Box noise ablation
 parser.add_argument('--box_noise_policy', default='none', type=str,

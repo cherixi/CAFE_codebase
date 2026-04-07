@@ -94,6 +94,13 @@ class GADTR(nn.Module):
         self.olic_score_use = getattr(args, 'olic_score_use', 'prune_relevance')
         self.olic_res_scale_init = float(getattr(args, 'olic_res_scale_init', 0.0))
         self.olic_gate_init_bias = float(getattr(args, 'olic_gate_init_bias', -4.0))
+        self.olic_attn_tau = float(getattr(args, 'olic_attn_tau', 2.0))
+        if self.olic_attn_tau <= 0.0:
+            self.olic_attn_tau = 1.0
+        self.olic_geom_scale_max = float(getattr(args, 'olic_geom_scale_max', 2.0))
+        if self.olic_geom_scale_max <= 0.0:
+            self.olic_geom_scale_max = 2.0
+        self.olic_geom_scale_init = float(getattr(args, 'olic_geom_scale_init', 1.0))
 
         if self.use_olic:
             # Object tokenization uses the same RoIAlign config as actor path.
@@ -113,6 +120,13 @@ class GADTR(nn.Module):
             self.olic_k_obj = nn.Linear(self.hidden_dim, self.hidden_dim)
             self.olic_v_obj = nn.Linear(self.hidden_dim, self.hidden_dim)
             self.olic_geom_bias_ao = MLP(6, self.hidden_dim, 1, 2)
+            # Learnable geometry contribution scale in [0, olic_geom_scale_max].
+            init_ratio = self.olic_geom_scale_init / self.olic_geom_scale_max
+            init_ratio = max(min(init_ratio, 1.0 - 1e-4), 1e-4)
+            init_logit = math.log(init_ratio / (1.0 - init_ratio))
+            self.olic_geom_scale_logit = nn.Parameter(
+                torch.tensor(init_logit, dtype=torch.float32)
+            )
 
             # Group-aware aggregation
             self.olic_group_query = nn.Linear(self.hidden_dim, self.hidden_dim)
@@ -314,7 +328,9 @@ class GADTR(nn.Module):
         v = self.olic_v_obj(obj_features)                               # [BT, M, H]
         qk_logits = torch.einsum('bnh,bmh->bnm', q, k) / math.sqrt(self.hidden_dim)
         geom_bias = self.olic_geom_bias_ao(geom_ao).squeeze(-1)
-        attn_logits = qk_logits + geom_bias
+        geom_scale = self.olic_geom_scale_max * torch.sigmoid(self.olic_geom_scale_logit)
+        geom_bias_scaled = geom_scale * geom_bias
+        attn_logits = (qk_logits + geom_bias_scaled) / self.olic_attn_tau
 
         # No hard pruning: route over all valid objects with soft attention.
         attn = self._masked_softmax(attn_logits, rel_valid_mask, dim=-1)
@@ -328,8 +344,8 @@ class GADTR(nn.Module):
         qk_var = ((qk_logits - qk_mean) ** 2 * valid_pairs_f).sum() / valid_pairs_count
         qk_std = torch.sqrt(qk_var + 1e-12)
 
-        geom_mean = (geom_bias * valid_pairs_f).sum() / valid_pairs_count
-        geom_var = ((geom_bias - geom_mean) ** 2 * valid_pairs_f).sum() / valid_pairs_count
+        geom_mean = (geom_bias_scaled * valid_pairs_f).sum() / valid_pairs_count
+        geom_var = ((geom_bias_scaled - geom_mean) ** 2 * valid_pairs_f).sum() / valid_pairs_count
         geom_std = torch.sqrt(geom_var + 1e-12)
         geom_qk_ratio = geom_std / (qk_std + 1e-6)
 
@@ -368,6 +384,7 @@ class GADTR(nn.Module):
             "olic_attn_entropy": attn_entropy_mean,
             "olic_attn_top1_mean": attn_top1_mean,
             "olic_valid_obj_per_actor": valid_obj_per_actor,
+            "olic_geom_scale": geom_scale,
         }
         return c_actor, c_group, alpha, beta, diag
 
@@ -528,6 +545,7 @@ class GADTR(nn.Module):
                 "olic_attn_entropy": actor_hs.new_tensor(0.0),
                 "olic_attn_top1_mean": actor_hs.new_tensor(0.0),
                 "olic_valid_obj_per_actor": actor_hs.new_tensor(0.0),
+                "olic_geom_scale": actor_hs.new_tensor(0.0),
             }
 
         if self.temporal_agg_mode == 'frame_mean_main':
@@ -583,6 +601,7 @@ class GADTR(nn.Module):
             "olic_attn_entropy": olic_diag["olic_attn_entropy"].detach(),
             "olic_attn_top1_mean": olic_diag["olic_attn_top1_mean"].detach(),
             "olic_valid_obj_per_actor": olic_diag["olic_valid_obj_per_actor"].detach(),
+            "olic_geom_scale": olic_diag["olic_geom_scale"].detach(),
         }
 
         return out
