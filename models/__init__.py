@@ -8,6 +8,8 @@ def build_model(args):
 
     losses = ['labels', 'cardinality']
     group_losses = ['group_labels', 'group_cardinality', 'group_code', 'group_consistency']
+    if getattr(args, 'use_pairwise_refiner', True):
+        group_losses.append('pairwise_group')
 
     # Set loss coefficients
     weight_dict = {}
@@ -15,6 +17,8 @@ def build_model(args):
     weight_dict['loss_group_ce'] = args.group_ce_loss_coef
     weight_dict['loss_group_code'] = args.group_code_loss_coef
     weight_dict['loss_consistency'] = args.consistency_loss_coef
+    if getattr(args, 'use_pairwise_refiner', True):
+        weight_dict['loss_pairwise_group'] = args.pairwise_loss_coef
 
     # Group matching
     group_matcher = build_group_matcher(args)

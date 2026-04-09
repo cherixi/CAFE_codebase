@@ -85,6 +85,12 @@ olic_group.add_argument('--use_olic', dest='use_olic', action='store_true',
 olic_group.add_argument('--no_olic', dest='use_olic', action='store_false',
                         help='disable OLIC object-conditioned branch')
 parser.set_defaults(use_olic=True)
+group_olic_group = parser.add_mutually_exclusive_group()
+group_olic_group.add_argument('--disable_group_olic', dest='disable_group_olic', action='store_true',
+                              help='disable group-side OLIC fusion and keep actor-side OLIC only')
+group_olic_group.add_argument('--enable_group_olic', dest='disable_group_olic', action='store_false',
+                              help='enable group-side OLIC fusion')
+parser.set_defaults(disable_group_olic=True)
 parser.add_argument('--object_tracks_pkl', default='', type=str,
                     help='path to object track pkl; default: <data_path>/cafe/object_tracks_gdino_swinb.pkl')
 parser.add_argument('--num_object_boxes', default=10, type=int, help='fixed number of object boxes per frame')
@@ -111,6 +117,28 @@ parser.add_argument('--olic_geom_scale_init', default=1.0, type=float,
                     help='initial scale for geometry bias term in OLIC routing')
 parser.add_argument('--olic_geom_scale_max', default=2.0, type=float,
                     help='maximum geometry scale for OLIC routing')
+pairwise_group = parser.add_mutually_exclusive_group()
+pairwise_group.add_argument('--use_pairwise_refiner', dest='use_pairwise_refiner', action='store_true',
+                            help='enable pairwise membership refiner')
+pairwise_group.add_argument('--no_pairwise_refiner', dest='use_pairwise_refiner', action='store_false',
+                            help='disable pairwise membership refiner')
+parser.set_defaults(use_pairwise_refiner=True)
+objrel_group = parser.add_mutually_exclusive_group()
+objrel_group.add_argument('--pairwise_use_object_relation', dest='pairwise_use_object_relation', action='store_true',
+                          help='use actor-side object summaries in pairwise affinity')
+objrel_group.add_argument('--no_pairwise_use_object_relation', dest='pairwise_use_object_relation', action='store_false',
+                          help='disable object relation feature in pairwise affinity')
+parser.set_defaults(pairwise_use_object_relation=True)
+geomrel_group = parser.add_mutually_exclusive_group()
+geomrel_group.add_argument('--pairwise_use_geom_relation', dest='pairwise_use_geom_relation', action='store_true',
+                           help='use clip-level geometry in pairwise affinity')
+geomrel_group.add_argument('--no_pairwise_use_geom_relation', dest='pairwise_use_geom_relation', action='store_false',
+                           help='disable geometry feature in pairwise affinity')
+parser.set_defaults(pairwise_use_geom_relation=True)
+parser.add_argument('--pairwise_loss_coef', default=0.25, type=float,
+                    help='loss weight for pairwise same-group supervision')
+parser.add_argument('--pairwise_refine_scale', default=0.5, type=float,
+                    help='residual scale for pairwise membership refinement')
 
 # Box noise ablation
 parser.add_argument('--box_noise_policy', default='none', type=str,
@@ -329,6 +357,18 @@ def validate(test_loader, model, criterion, metrics):
                              **loss_dict_reduced_unscaled)
 
         metric_logger.update(group_class_error=loss_dict_reduced['group_class_error'])
+        if args.use_pairwise_refiner and 'pairwise_refine_delta_mean' in outputs:
+            metric_logger.update(
+                pairwise_refine_delta_mean=float(outputs['pairwise_refine_delta_mean'].mean().item()),
+                membership_entropy=float(outputs['membership_entropy'].mean().item()),
+                group_olic_disabled=float(outputs['group_olic_disabled'].mean().item()),
+            )
+            if 'pair_pos_mean' in loss_dict_reduced:
+                metric_logger.update(
+                    pair_pos_mean=float(loss_dict_reduced['pair_pos_mean'].item()),
+                    pair_neg_mean=float(loss_dict_reduced['pair_neg_mean'].item()),
+                    pair_gap=float(loss_dict_reduced['pair_gap'].item()),
+                )
 
         # Keep original coordinates for evaluation alignment.
         make_txt(clean_boxes, infos, outputs, name_to_vid, file_path)

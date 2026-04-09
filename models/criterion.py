@@ -49,6 +49,7 @@ class SetCriterion(nn.Module):
 
         # option
         self.temperature = args.temperature
+        self.use_pairwise_refiner = bool(getattr(args, 'use_pairwise_refiner', True))
 
     #######################################################################################################################
     # * Individual Losses
@@ -209,6 +210,64 @@ class SetCriterion(nn.Module):
         losses = {'loss_consistency': consistency_loss}
         return losses
 
+    def loss_pairwise_group(self, outputs, targets, group_indices=None, log=True):
+        pair_logits = outputs['pairwise_affinity_logits']
+        pair_valid = outputs['pairwise_valid_mask']
+
+        loss_pair = pair_logits.new_tensor(0.0)
+        pos_mean_acc = pair_logits.new_tensor(0.0)
+        neg_mean_acc = pair_logits.new_tensor(0.0)
+        valid_batches = 0
+
+        for batch_idx in range(pair_logits.shape[0]):
+            dummy_idx = targets[batch_idx]["dummy_idx"].squeeze().bool()
+            non_dummy_idx = dummy_idx.nonzero(as_tuple=True)[0]
+            if non_dummy_idx.numel() <= 1:
+                continue
+
+            membership = targets[batch_idx]["membership"][0][non_dummy_idx]
+            pair_logits_batch = pair_logits[batch_idx][non_dummy_idx][:, non_dummy_idx]
+            pair_valid_batch = pair_valid[batch_idx][non_dummy_idx][:, non_dummy_idx]
+
+            tgt_i = membership.unsqueeze(1)
+            tgt_j = membership.unsqueeze(0)
+            positive = (tgt_i == tgt_j) & (tgt_i >= 0) & pair_valid_batch
+            negative = (tgt_i != tgt_j) & pair_valid_batch
+            outlier_pair = (tgt_i < 0) & (tgt_j < 0) & pair_valid_batch
+            negative = negative | outlier_pair
+            valid_mask = positive | negative
+            if valid_mask.sum() == 0:
+                continue
+
+            target_pair = positive.float()
+            loss_pair = loss_pair + F.binary_cross_entropy_with_logits(
+                pair_logits_batch[valid_mask],
+                target_pair[valid_mask],
+            )
+
+            pair_prob = torch.sigmoid(pair_logits_batch)
+            if positive.any():
+                pos_mean_acc = pos_mean_acc + pair_prob[positive].mean()
+            if negative.any():
+                neg_mean_acc = neg_mean_acc + pair_prob[negative].mean()
+            valid_batches += 1
+
+        if valid_batches > 0:
+            loss_pair = loss_pair / valid_batches
+            pos_mean = pos_mean_acc / valid_batches
+            neg_mean = neg_mean_acc / valid_batches
+        else:
+            pos_mean = pair_logits.new_tensor(0.0)
+            neg_mean = pair_logits.new_tensor(0.0)
+
+        losses = {
+            'loss_pairwise_group': loss_pair,
+            'pair_pos_mean': pos_mean.detach(),
+            'pair_neg_mean': neg_mean.detach(),
+            'pair_gap': (pos_mean - neg_mean).detach(),
+        }
+        return losses
+
     def _get_src_permutation_idx(self, indices):
         # permute predictions following indices
         batch_idx = torch.cat([torch.full_like(src, i) for i, (src, _) in enumerate(indices)])
@@ -238,6 +297,7 @@ class SetCriterion(nn.Module):
             'group_cardinality': self.loss_group_cardinality,
             'group_code': self.loss_group_code,
             'group_consistency': self.loss_group_consistency,
+            'pairwise_group': self.loss_pairwise_group,
         }
         assert loss in loss_map, f'do you really want to compute {loss} loss?'
         return loss_map[loss](outputs, targets, group_indices, **kwargs)

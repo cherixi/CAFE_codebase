@@ -85,9 +85,23 @@ class GADTR(nn.Module):
         # Membership prediction heads
         self.actor_match_emb = nn.Linear(self.hidden_dim, self.hidden_dim)
         self.group_match_emb = nn.Linear(self.hidden_dim, self.hidden_dim)
+        self.use_pairwise_refiner = bool(getattr(args, 'use_pairwise_refiner', True))
+        self.pairwise_refine_scale = float(getattr(args, 'pairwise_refine_scale', 0.5))
+        self.pairwise_use_object_relation = bool(getattr(args, 'pairwise_use_object_relation', True))
+        self.pairwise_use_geom_relation = bool(getattr(args, 'pairwise_use_geom_relation', True))
+        self.pairwise_geom_dim = 6
+        self.pairwise_obj_dim = 2
+        if self.use_pairwise_refiner:
+            self.pairwise_affinity_mlp = MLP(
+                2 * self.hidden_dim + self.pairwise_geom_dim + self.pairwise_obj_dim,
+                self.hidden_dim,
+                1,
+                3,
+            )
 
         # OLIC (Object-Conditioned Local Interaction Conditioner)
         self.use_olic = bool(getattr(args, 'use_olic', False))
+        self.disable_group_olic = bool(getattr(args, 'disable_group_olic', True))
         self.olic_topk_obj = int(getattr(args, 'olic_topk_obj', 6))
         self.olic_dropout_p = float(getattr(args, 'olic_dropout', args.drop_rate))
         self.olic_use_ffn = bool(getattr(args, 'olic_use_ffn', False))
@@ -256,6 +270,128 @@ class GADTR(nn.Module):
         probs = probs * mask.float()
         denom = probs.sum(dim=dim, keepdim=True).clamp(min=1e-6)
         return probs / denom
+
+    @staticmethod
+    def _clip_pair_geom(boxes_norm):
+        # boxes_norm: [B, T, N, 4] normalized cxcywh
+        cx = boxes_norm[..., 0]
+        cy = boxes_norm[..., 1]
+        w = boxes_norm[..., 2].clamp(min=1e-6)
+        h = boxes_norm[..., 3].clamp(min=1e-6)
+
+        dx = cx.unsqueeze(-1) - cx.unsqueeze(-2)
+        dy = cy.unsqueeze(-1) - cy.unsqueeze(-2)
+        dist = torch.sqrt(dx * dx + dy * dy + 1e-6)
+        mean_dist = dist.mean(dim=1)
+        min_dist = dist.min(dim=1).values
+
+        x1 = cx - 0.5 * w
+        y1 = cy - 0.5 * h
+        x2 = cx + 0.5 * w
+        y2 = cy + 0.5 * h
+
+        inter_x1 = torch.maximum(x1.unsqueeze(-1), x1.unsqueeze(-2))
+        inter_y1 = torch.maximum(y1.unsqueeze(-1), y1.unsqueeze(-2))
+        inter_x2 = torch.minimum(x2.unsqueeze(-1), x2.unsqueeze(-2))
+        inter_y2 = torch.minimum(y2.unsqueeze(-1), y2.unsqueeze(-2))
+        inter_w = (inter_x2 - inter_x1).clamp(min=0.0)
+        inter_h = (inter_y2 - inter_y1).clamp(min=0.0)
+        inter = inter_w * inter_h
+        area = ((x2 - x1).clamp(min=0.0) * (y2 - y1).clamp(min=0.0))
+        union = (area.unsqueeze(-1) + area.unsqueeze(-2) - inter).clamp(min=1e-6)
+        mean_iou = (inter / union).mean(dim=1)
+
+        aspect = torch.log((w / h).clamp(min=1e-6))
+        aspect_diff = (aspect.unsqueeze(-1) - aspect.unsqueeze(-2)).mean(dim=1)
+        mean_dx = dx.mean(dim=1)
+        mean_dy = dy.mean(dim=1)
+
+        return torch.stack((mean_dist, min_dist, mean_iou, aspect_diff, mean_dx, mean_dy), dim=-1)
+
+    @staticmethod
+    def _pairwise_object_relation(actor_obj_clip):
+        normed = F.normalize(actor_obj_clip, p=2, dim=-1)
+        cos = torch.einsum('bih,bjh->bij', normed, normed)
+        diff = actor_obj_clip.unsqueeze(2) - actor_obj_clip.unsqueeze(1)
+        diff_norm = torch.norm(diff, dim=-1)
+        return torch.stack((cos, diff_norm), dim=-1)
+
+    def _run_pairwise_refiner(
+        self,
+        actor_clip,
+        outputs_actor_emb,
+        outputs_group_emb,
+        boxes_norm,
+        dummy_mask,
+        actor_obj_clip=None,
+    ):
+        bs, n, _ = actor_clip.shape
+        actor_valid = ~dummy_mask.bool()
+        base_logits = torch.bmm(outputs_group_emb, outputs_actor_emb.transpose(1, 2))
+
+        if not self.use_pairwise_refiner:
+            zero_pair = actor_clip.new_zeros(bs, n, n)
+            pair_valid = actor_valid.unsqueeze(1) & actor_valid.unsqueeze(2)
+            membership = F.softmax(base_logits, dim=1)
+            entropy = -(membership * membership.clamp(min=1e-9).log()).sum(dim=1)
+            entropy = (entropy * actor_valid.float()).sum() / actor_valid.float().sum().clamp(min=1.0)
+            return {
+                "membership_logits_base": base_logits,
+                "membership_logits_refined": base_logits,
+                "membership": membership,
+                "pairwise_affinity_logits": zero_pair,
+                "pairwise_affinity_probs": zero_pair,
+                "pairwise_valid_mask": pair_valid,
+                "pairwise_refine_delta_mean": actor_clip.new_tensor(0.0),
+                "membership_entropy": entropy,
+            }
+
+        pair_actor_i = actor_clip.unsqueeze(2).expand(bs, n, n, self.hidden_dim)
+        pair_actor_j = actor_clip.unsqueeze(1).expand(bs, n, n, self.hidden_dim)
+
+        if self.pairwise_use_geom_relation:
+            pair_geom = self._clip_pair_geom(boxes_norm)
+        else:
+            pair_geom = actor_clip.new_zeros(bs, n, n, self.pairwise_geom_dim)
+
+        if self.pairwise_use_object_relation and actor_obj_clip is not None:
+            pair_obj = self._pairwise_object_relation(actor_obj_clip)
+        else:
+            pair_obj = actor_clip.new_zeros(bs, n, n, self.pairwise_obj_dim)
+
+        pair_feat = torch.cat((pair_actor_i, pair_actor_j, pair_geom, pair_obj), dim=-1)
+        pair_logits = self.pairwise_affinity_mlp(pair_feat).squeeze(-1)
+        pair_logits = 0.5 * (pair_logits + pair_logits.transpose(1, 2))
+
+        pair_valid = actor_valid.unsqueeze(1) & actor_valid.unsqueeze(2)
+        eye = torch.eye(n, dtype=torch.bool, device=actor_clip.device).unsqueeze(0)
+        pair_valid = pair_valid & (~eye)
+        pair_logits = pair_logits.masked_fill(~pair_valid, 0.0)
+        pair_probs = torch.sigmoid(pair_logits) * pair_valid.float()
+
+        base_probs = F.softmax(base_logits, dim=1) * actor_valid.unsqueeze(1).float()
+        support = torch.einsum('bgi,bij->bgj', base_probs, pair_probs)
+        support = support * actor_valid.unsqueeze(1).float()
+        refined_logits = base_logits + self.pairwise_refine_scale * support
+        membership = F.softmax(refined_logits, dim=1)
+
+        refine_mask = actor_valid.unsqueeze(1).expand_as(refined_logits).float()
+        refine_delta = (refined_logits - base_logits).abs() * refine_mask
+        refine_delta_mean = refine_delta.sum() / refine_mask.sum().clamp(min=1.0)
+        membership_safe = membership.clamp(min=1e-9)
+        membership_entropy = -(membership * membership_safe.log()).sum(dim=1)
+        membership_entropy = (membership_entropy * actor_valid.float()).sum() / actor_valid.float().sum().clamp(min=1.0)
+
+        return {
+            "membership_logits_base": base_logits,
+            "membership_logits_refined": refined_logits,
+            "membership": membership,
+            "pairwise_affinity_logits": pair_logits,
+            "pairwise_affinity_probs": pair_probs,
+            "pairwise_valid_mask": pair_valid,
+            "pairwise_refine_delta_mean": refine_delta_mean,
+            "membership_entropy": membership_entropy,
+        }
 
     def _run_olic(
         self,
@@ -523,15 +659,19 @@ class GADTR(nn.Module):
             )
 
             actor_hs = actor_hs + olic_scale * self.olic_actor_res_scale * self.olic_drop(alpha_o * c_actor)
-            group_hs = group_hs + olic_scale * self.olic_group_res_scale * self.olic_drop(beta_o * c_group)
+            if not self.disable_group_olic:
+                group_hs = group_hs + olic_scale * self.olic_group_res_scale * self.olic_drop(beta_o * c_group)
+            else:
+                beta_o = torch.zeros_like(beta_o)
 
             if self.olic_use_ffn:
                 actor_hs = actor_hs + self.olic_actor_ffn_scale * self.olic_actor_ffn(
                     self.olic_actor_ffn_norm(actor_hs)
                 )
-                group_hs = group_hs + self.olic_group_ffn_scale * self.olic_group_ffn(
-                    self.olic_group_ffn_norm(group_hs)
-                )
+                if not self.disable_group_olic:
+                    group_hs = group_hs + self.olic_group_ffn_scale * self.olic_group_ffn(
+                        self.olic_group_ffn_norm(group_hs)
+                    )
             olic_alpha_mean = alpha_o.mean()
             olic_beta_mean = beta_o.mean()
         else:
@@ -583,15 +723,32 @@ class GADTR(nn.Module):
 
         outputs_actor_emb = self.actor_match_emb(inst_repr)
         outputs_group_emb = self.group_match_emb(group_repr)
-
-        membership = torch.bmm(outputs_group_emb, outputs_actor_emb.transpose(1, 2))
-        membership = F.softmax(membership, dim=1)
+        actor_obj_clip = None
+        if self.use_olic and object_boxes_xyxy is not None and object_valid_mask is not None and object_scores is not None:
+            actor_obj_clip = c_actor.mean(dim=1)
+        pairwise_out = self._run_pairwise_refiner(
+            actor_clip=inst_repr,
+            outputs_actor_emb=outputs_actor_emb,
+            outputs_group_emb=outputs_group_emb,
+            boxes_norm=boxes_norm,
+            dummy_mask=dummy_mask.reshape(bs, t, n)[:, 0, :],
+            actor_obj_clip=actor_obj_clip,
+        )
+        membership = pairwise_out["membership"]
 
         out = {
             "pred_actions": outputs_class,
             "pred_activities": outputs_group_class,
             "membership": membership.reshape(bs, self.num_group_tokens, self.num_boxes),
             "actor_embeddings": inst_repr,
+            "membership_logits_base": pairwise_out["membership_logits_base"],
+            "membership_logits_refined": pairwise_out["membership_logits_refined"],
+            "pairwise_affinity_logits": pairwise_out["pairwise_affinity_logits"],
+            "pairwise_affinity_probs": pairwise_out["pairwise_affinity_probs"],
+            "pairwise_valid_mask": pairwise_out["pairwise_valid_mask"],
+            "pairwise_refine_delta_mean": pairwise_out["pairwise_refine_delta_mean"].detach(),
+            "membership_entropy": pairwise_out["membership_entropy"].detach(),
+            "group_olic_disabled": inst_repr.new_tensor(1.0 if self.disable_group_olic else 0.0),
             "olic_alpha_mean": olic_alpha_mean.detach(),
             "olic_beta_mean": olic_beta_mean.detach(),
             "olic_warmup_scale": inst_repr.new_tensor(olic_scale),
