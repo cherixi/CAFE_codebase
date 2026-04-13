@@ -89,11 +89,14 @@ class GADTR(nn.Module):
         self.pairwise_refine_scale = float(getattr(args, 'pairwise_refine_scale', 0.5))
         self.pairwise_use_object_relation = bool(getattr(args, 'pairwise_use_object_relation', True))
         self.pairwise_use_geom_relation = bool(getattr(args, 'pairwise_use_geom_relation', True))
+        self.pairwise_use_small_object_relation = bool(getattr(args, 'pairwise_use_small_object_relation', True))
+        self.pairwise_use_anchor_relation = bool(getattr(args, 'pairwise_use_anchor_relation', True))
         self.pairwise_geom_dim = 6
-        self.pairwise_obj_dim = 2
+        self.pairwise_small_obj_dim = 2
+        self.pairwise_anchor_dim = 2
         if self.use_pairwise_refiner:
             self.pairwise_affinity_mlp = MLP(
-                2 * self.hidden_dim + self.pairwise_geom_dim + self.pairwise_obj_dim,
+                2 * self.hidden_dim + self.pairwise_geom_dim + self.pairwise_small_obj_dim + self.pairwise_anchor_dim,
                 self.hidden_dim,
                 1,
                 3,
@@ -111,10 +114,19 @@ class GADTR(nn.Module):
         self.olic_attn_tau = float(getattr(args, 'olic_attn_tau', 2.0))
         if self.olic_attn_tau <= 0.0:
             self.olic_attn_tau = 1.0
+        self.use_dual_object_channels = bool(getattr(args, 'use_dual_object_channels', True))
+        self.anchor_attn_tau = float(getattr(args, 'anchor_attn_tau', 3.0))
+        if self.anchor_attn_tau <= 0.0:
+            self.anchor_attn_tau = 3.0
         self.olic_geom_scale_max = float(getattr(args, 'olic_geom_scale_max', 2.0))
         if self.olic_geom_scale_max <= 0.0:
             self.olic_geom_scale_max = 2.0
         self.olic_geom_scale_init = float(getattr(args, 'olic_geom_scale_init', 1.0))
+        self.phone_family_id = 1
+        self.study_family_id = 2
+        self.dining_family_id = 3
+        self.service_family_id = 4
+        self.table_family_id = 5
 
         if self.use_olic:
             # Object tokenization uses the same RoIAlign config as actor path.
@@ -316,6 +328,29 @@ class GADTR(nn.Module):
         diff_norm = torch.norm(diff, dim=-1)
         return torch.stack((cos, diff_norm), dim=-1)
 
+    @staticmethod
+    def _aggregate_anchor_relations(anchor_attn, object_scores, object_family_id, object_valid_mask):
+        # anchor_attn: [B, T, N, M], object_scores/family/valid: [B, T, M]
+        score = object_scores.float().clamp(min=0.0)
+        valid = object_valid_mask > 0.5
+        family = object_family_id.long()
+
+        table_mask = valid & (family == 5)
+        service_mask = valid & (family == 4)
+
+        def _shared(mask):
+            weighted = anchor_attn * (score * mask.float()).unsqueeze(2)
+            shared_t = torch.einsum('btnm,btjm->btij', anchor_attn, weighted)
+            frame_has = (mask.sum(dim=-1) > 0).float()
+            denom = frame_has.sum(dim=1, keepdim=True).clamp(min=1.0).unsqueeze(-1)
+            shared = shared_t.sum(dim=1) / denom
+            return shared
+
+        shared_table = _shared(table_mask)
+        shared_service = _shared(service_mask)
+        shared = torch.stack((shared_table, shared_service), dim=-1)
+        return shared, shared_table.mean(), shared_service.mean()
+
     def _run_pairwise_refiner(
         self,
         actor_clip,
@@ -324,6 +359,7 @@ class GADTR(nn.Module):
         boxes_norm,
         dummy_mask,
         actor_obj_clip=None,
+        anchor_relation=None,
     ):
         bs, n, _ = actor_clip.shape
         actor_valid = ~dummy_mask.bool()
@@ -355,12 +391,17 @@ class GADTR(nn.Module):
         else:
             pair_geom = actor_clip.new_zeros(bs, n, n, self.pairwise_geom_dim)
 
-        if self.pairwise_use_object_relation and actor_obj_clip is not None:
+        if self.pairwise_use_object_relation and self.pairwise_use_small_object_relation and actor_obj_clip is not None:
             pair_obj = self._pairwise_object_relation(actor_obj_clip)
         else:
-            pair_obj = actor_clip.new_zeros(bs, n, n, self.pairwise_obj_dim)
+            pair_obj = actor_clip.new_zeros(bs, n, n, self.pairwise_small_obj_dim)
 
-        pair_feat = torch.cat((pair_actor_i, pair_actor_j, pair_geom, pair_obj), dim=-1)
+        if self.pairwise_use_anchor_relation and anchor_relation is not None:
+            pair_anchor = anchor_relation
+        else:
+            pair_anchor = actor_clip.new_zeros(bs, n, n, self.pairwise_anchor_dim)
+
+        pair_feat = torch.cat((pair_actor_i, pair_actor_j, pair_geom, pair_obj, pair_anchor), dim=-1)
         pair_logits = self.pairwise_affinity_mlp(pair_feat).squeeze(-1)
         pair_logits = 0.5 * (pair_logits + pair_logits.transpose(1, 2))
 
@@ -408,6 +449,7 @@ class GADTR(nn.Module):
         object_boxes_xyxy,
         object_valid_mask,
         object_scores,
+        object_family_id,
         oh,
         ow,
     ):
@@ -435,6 +477,12 @@ class GADTR(nn.Module):
         obj_cxcywh = self._xyxy_to_cxcywh(obj_xyxy)
 
         obj_valid = object_valid_mask.reshape(bt, m) > 0.5
+        if object_family_id is not None:
+            obj_family = object_family_id.reshape(bt, m).long()
+            has_family_ids = bool((obj_family > 0).any().item())
+        else:
+            obj_family = torch.zeros((bt, m), dtype=torch.long, device=obj_xyxy.device)
+            has_family_ids = False
 
         # Object RoIAlign on the same feature map scale/path as actor RoIAlign.
         obj_pixel = obj_xyxy.clone()
@@ -471,15 +519,32 @@ class GADTR(nn.Module):
         geom_bias = self.olic_geom_bias_ao(geom_ao).squeeze(-1)
         geom_scale = self.olic_geom_scale_max * torch.sigmoid(self.olic_geom_scale_logit)
         geom_bias_scaled = geom_scale * geom_bias
-        attn_logits = (qk_logits + geom_bias_scaled) / self.olic_attn_tau
+        if self.use_dual_object_channels and has_family_ids:
+            small_obj_mask = obj_valid & (
+                (obj_family == self.phone_family_id)
+                | (obj_family == self.study_family_id)
+                | (obj_family == self.dining_family_id)
+            )
+            anchor_obj_mask = obj_valid & (
+                (obj_family == self.service_family_id)
+                | (obj_family == self.table_family_id)
+            )
+        else:
+            small_obj_mask = obj_valid
+            anchor_obj_mask = obj_valid.new_zeros(obj_valid.shape)
 
-        # No hard pruning: route over all valid objects with soft attention.
-        attn = self._masked_softmax(attn_logits, rel_valid_mask, dim=-1)
-        c_actor = torch.einsum('bnm,bmh->bnh', attn, v)
-        c_actor = c_actor * actor_valid.unsqueeze(-1).float()
+        small_rel_valid_mask = actor_valid.unsqueeze(-1) & small_obj_mask.unsqueeze(1)
+        small_attn_logits = (qk_logits + geom_bias_scaled) / self.olic_attn_tau
+        attn_small = self._masked_softmax(small_attn_logits, small_rel_valid_mask, dim=-1)
+        c_actor_small = torch.einsum('bnm,bmh->bnh', attn_small, v)
+        c_actor_small = c_actor_small * actor_valid.unsqueeze(-1).float()
+
+        anchor_rel_valid_mask = actor_valid.unsqueeze(-1) & anchor_obj_mask.unsqueeze(1)
+        anchor_attn_logits = (qk_logits + geom_bias_scaled) / self.anchor_attn_tau
+        attn_anchor = self._masked_softmax(anchor_attn_logits, anchor_rel_valid_mask, dim=-1)
 
         # Diagnostics for geometry-vs-content balance and attention collapse checks.
-        valid_pairs_f = rel_valid_mask.float()
+        valid_pairs_f = small_rel_valid_mask.float()
         valid_pairs_count = valid_pairs_f.sum().clamp(min=1.0)
         qk_mean = (qk_logits * valid_pairs_f).sum() / valid_pairs_count
         qk_var = ((qk_logits - qk_mean) ** 2 * valid_pairs_f).sum() / valid_pairs_count
@@ -492,12 +557,14 @@ class GADTR(nn.Module):
 
         actor_valid_f = actor_valid.float()
         valid_actor_count = actor_valid_f.sum().clamp(min=1.0)
-        attn_safe = attn.clamp(min=1e-9)
-        attn_entropy = -(attn * torch.log(attn_safe)).sum(dim=-1)  # [BT, N]
+        attn_safe = attn_small.clamp(min=1e-9)
+        attn_entropy = -(attn_small * torch.log(attn_safe)).sum(dim=-1)  # [BT, N]
         attn_entropy_mean = (attn_entropy * actor_valid_f).sum() / valid_actor_count
-        attn_top1 = attn.max(dim=-1).values  # [BT, N]
+        attn_top1 = attn_small.max(dim=-1).values  # [BT, N]
         attn_top1_mean = (attn_top1 * actor_valid_f).sum() / valid_actor_count
-        valid_obj_per_actor = (valid_pairs_f.sum(dim=-1) * actor_valid_f).sum() / valid_actor_count
+        small_valid_obj_per_actor = (valid_pairs_f.sum(dim=-1) * actor_valid_f).sum() / valid_actor_count
+        anchor_valid_pairs_f = anchor_rel_valid_mask.float()
+        anchor_valid_obj_per_actor = (anchor_valid_pairs_f.sum(dim=-1) * actor_valid_f).sum() / valid_actor_count
 
         # Group-aware aggregation from actor summaries.
         qg = self.olic_group_query(group_tokens_bt)                     # [BT, K, H]
@@ -508,13 +575,13 @@ class GADTR(nn.Module):
             actor_valid.unsqueeze(1).expand(bt, self.num_group_tokens, n),
             dim=-1,
         )
-        c_group = torch.einsum('bkn,bnh->bkh', group_attn, c_actor)
+        c_group = torch.einsum('bkn,bnh->bkh', group_attn, c_actor_small)
 
-        alpha = torch.sigmoid(self.olic_gate_actor(torch.cat((actor_tokens_bt, c_actor), dim=-1)))  # [BT, N, 1]
+        alpha = torch.sigmoid(self.olic_gate_actor(torch.cat((actor_tokens_bt, c_actor_small), dim=-1)))  # [BT, N, 1]
         beta = torch.sigmoid(self.olic_gate_group(torch.cat((group_tokens_bt, c_group), dim=-1)))   # [BT, K, 1]
         alpha = alpha * actor_valid.unsqueeze(-1).float()
 
-        c_actor = c_actor.reshape(bs, t, n, self.hidden_dim)
+        c_actor_small = c_actor_small.reshape(bs, t, n, self.hidden_dim)
         c_group = c_group.reshape(bs, t, self.num_group_tokens, self.hidden_dim)
         alpha = alpha.reshape(bs, t, n, 1)
         beta = beta.reshape(bs, t, self.num_group_tokens, 1)
@@ -524,10 +591,13 @@ class GADTR(nn.Module):
             "olic_geom_qk_ratio": geom_qk_ratio,
             "olic_attn_entropy": attn_entropy_mean,
             "olic_attn_top1_mean": attn_top1_mean,
-            "olic_valid_obj_per_actor": valid_obj_per_actor,
+            "olic_valid_obj_per_actor": small_valid_obj_per_actor,
+            "small_valid_obj_per_actor": small_valid_obj_per_actor,
+            "anchor_valid_obj_per_actor": anchor_valid_obj_per_actor,
             "olic_geom_scale": geom_scale,
+            "anchor_attn": attn_anchor.reshape(bs, t, n, m),
         }
-        return c_actor, c_group, alpha, beta, diag
+        return c_actor_small, c_group, alpha, beta, diag
 
     def forward(
         self,
@@ -538,6 +608,8 @@ class GADTR(nn.Module):
         object_boxes_xyxy=None,
         object_valid_mask=None,
         object_scores=None,
+        object_family_id=None,
+        object_token_id=None,
         olic_warmup_scale=1.0,
     ):
         """
@@ -659,6 +731,7 @@ class GADTR(nn.Module):
                 object_boxes_xyxy=object_boxes_xyxy,
                 object_valid_mask=object_valid_mask,
                 object_scores=object_scores,
+                object_family_id=object_family_id,
                 oh=oh,
                 ow=ow,
             )
@@ -729,8 +802,18 @@ class GADTR(nn.Module):
         outputs_actor_emb = self.actor_match_emb(inst_repr)
         outputs_group_emb = self.group_match_emb(group_repr)
         actor_obj_clip = None
+        anchor_relation = None
+        shared_table_mean = inst_repr.new_tensor(0.0)
+        shared_service_mean = inst_repr.new_tensor(0.0)
         if self.use_olic and object_boxes_xyxy is not None and object_valid_mask is not None and object_scores is not None:
             actor_obj_clip = c_actor.mean(dim=1)
+            if object_family_id is not None:
+                anchor_relation, shared_table_mean, shared_service_mean = self._aggregate_anchor_relations(
+                    olic_diag["anchor_attn"],
+                    object_scores,
+                    object_family_id,
+                    object_valid_mask,
+                )
         pairwise_out = self._run_pairwise_refiner(
             actor_clip=inst_repr,
             outputs_actor_emb=outputs_actor_emb,
@@ -738,6 +821,7 @@ class GADTR(nn.Module):
             boxes_norm=boxes_norm,
             dummy_mask=dummy_mask.reshape(bs, t, n)[:, 0, :],
             actor_obj_clip=actor_obj_clip,
+            anchor_relation=anchor_relation,
         )
         membership = pairwise_out["membership"]
 
@@ -764,7 +848,11 @@ class GADTR(nn.Module):
             "olic_attn_entropy": olic_diag["olic_attn_entropy"].detach(),
             "olic_attn_top1_mean": olic_diag["olic_attn_top1_mean"].detach(),
             "olic_valid_obj_per_actor": olic_diag["olic_valid_obj_per_actor"].detach(),
+            "small_valid_obj_per_actor": olic_diag["small_valid_obj_per_actor"].detach(),
+            "anchor_valid_obj_per_actor": olic_diag["anchor_valid_obj_per_actor"].detach(),
             "olic_geom_scale": olic_diag["olic_geom_scale"].detach(),
+            "shared_table_mean": shared_table_mean.detach(),
+            "shared_service_mean": shared_service_mean.detach(),
         }
 
         return out

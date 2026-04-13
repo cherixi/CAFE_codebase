@@ -142,7 +142,7 @@ def read_dataset(args):
         if use_olic:
             object_tracks_pkl = getattr(args, 'object_tracks_pkl', '')
             if not object_tracks_pkl:
-                object_tracks_pkl = os.path.join(data_path, 'object_tracks_gdino_swinb.pkl')
+                object_tracks_pkl = os.path.join(data_path, 'object_tracks_gdino_swinb_localmix_membership.pkl')
             if not os.path.exists(object_tracks_pkl):
                 raise FileNotFoundError(
                     f"use_olic=True but object track pkl not found: {object_tracks_pkl}"

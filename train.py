@@ -101,8 +101,8 @@ group_olic_group.add_argument('--enable_group_olic', dest='disable_group_olic', 
                               help='enable group-side OLIC fusion')
 parser.set_defaults(disable_group_olic=True)
 parser.add_argument('--object_tracks_pkl', default='', type=str,
-                    help='path to object track pkl; default: <data_path>/cafe/object_tracks_gdino_swinb.pkl')
-parser.add_argument('--num_object_boxes', default=10, type=int, help='fixed number of object boxes per frame')
+                    help='path to object track pkl; default: <data_path>/cafe/object_tracks_gdino_swinb_localmix_membership.pkl')
+parser.add_argument('--num_object_boxes', default=20, type=int, help='fixed number of object boxes per frame')
 parser.add_argument('--olic_topk_obj', default=6, type=int,
                     help='(deprecated) top-k objects per actor for relevance pruning; pruning is disabled in current stable path')
 parser.add_argument('--olic_dropout', default=-1.0, type=float,
@@ -122,6 +122,14 @@ parser.add_argument('--olic_warmup_epochs', default=5, type=int,
                     help='linear warmup epochs for OLIC branch scale')
 parser.add_argument('--olic_attn_tau', default=2.0, type=float,
                     help='softmax temperature for actor-object routing (tau>1 makes attention less peaky)')
+parser.add_argument('--anchor_attn_tau', default=3.0, type=float,
+                    help='softmax temperature for anchor-object routing (larger keeps shared anchors smoother)')
+dual_olic_group = parser.add_mutually_exclusive_group()
+dual_olic_group.add_argument('--use_dual_object_channels', dest='use_dual_object_channels', action='store_true',
+                             help='split objects into small-object OLIC and anchor-aware PMR channels')
+dual_olic_group.add_argument('--no_dual_object_channels', dest='use_dual_object_channels', action='store_false',
+                             help='disable dual object channels and fall back to single-channel OLIC')
+parser.set_defaults(use_dual_object_channels=True)
 parser.add_argument('--olic_geom_scale_init', default=1.0, type=float,
                     help='initial scale for geometry bias term in OLIC routing')
 parser.add_argument('--olic_geom_scale_max', default=2.0, type=float,
@@ -138,6 +146,18 @@ objrel_group.add_argument('--pairwise_use_object_relation', dest='pairwise_use_o
 objrel_group.add_argument('--no_pairwise_use_object_relation', dest='pairwise_use_object_relation', action='store_false',
                           help='disable object relation feature in pairwise affinity')
 parser.set_defaults(pairwise_use_object_relation=True)
+small_objrel_group = parser.add_mutually_exclusive_group()
+small_objrel_group.add_argument('--pairwise_use_small_object_relation', dest='pairwise_use_small_object_relation', action='store_true',
+                                help='use small-object clip relation in pairwise affinity')
+small_objrel_group.add_argument('--no_pairwise_use_small_object_relation', dest='pairwise_use_small_object_relation', action='store_false',
+                                help='disable small-object clip relation in pairwise affinity')
+parser.set_defaults(pairwise_use_small_object_relation=True)
+anchor_objrel_group = parser.add_mutually_exclusive_group()
+anchor_objrel_group.add_argument('--pairwise_use_anchor_relation', dest='pairwise_use_anchor_relation', action='store_true',
+                                 help='use shared table/service anchor relation in pairwise affinity')
+anchor_objrel_group.add_argument('--no_pairwise_use_anchor_relation', dest='pairwise_use_anchor_relation', action='store_false',
+                                 help='disable shared table/service anchor relation in pairwise affinity')
+parser.set_defaults(pairwise_use_anchor_relation=True)
 geomrel_group = parser.add_mutually_exclusive_group()
 geomrel_group.add_argument('--pairwise_use_geom_relation', dest='pairwise_use_geom_relation', action='store_true',
                            help='use clip-level geometry in pairwise affinity')
@@ -284,7 +304,8 @@ def main():
             f"dropout={args.olic_dropout}, score_use={args.olic_score_use}, "
             f"res_scale_init={args.olic_res_scale_init}, gate_init_bias={args.olic_gate_init_bias}, "
             f"warmup_epochs={args.olic_warmup_epochs}, pruning=OFF(soft-routing-all-valid), "
-            f"attn_tau={args.olic_attn_tau}, geom_scale_init={args.olic_geom_scale_init}, "
+            f"attn_tau={args.olic_attn_tau}, anchor_attn_tau={args.anchor_attn_tau}, "
+            f"dual_channels={int(args.use_dual_object_channels)}, geom_scale_init={args.olic_geom_scale_init}, "
             f"geom_scale_max={args.olic_geom_scale_max}, group_olic_disabled={int(args.disable_group_olic)}"
         )
         print_log(save_path, f"----------------------------------------------------------------")
@@ -297,7 +318,8 @@ def main():
         print_log(
             save_path,
             f"PMR cfg: refine_scale={args.pairwise_refine_scale}, loss_coef={args.pairwise_loss_coef}, "
-            f"use_geom={int(args.pairwise_use_geom_relation)}, use_obj={int(args.pairwise_use_object_relation)}"
+            f"use_geom={int(args.pairwise_use_geom_relation)}, use_obj={int(args.pairwise_use_object_relation)}, "
+            f"use_small_obj={int(args.pairwise_use_small_object_relation)}, use_anchor={int(args.pairwise_use_anchor_relation)}"
         )
 
     # set random seed
@@ -451,6 +473,17 @@ def main():
                     train_log.get('olic_valid_obj_per_actor', 0.0),
                 )
             )
+            if 'small_valid_obj_per_actor' in train_log:
+                print_log(
+                    save_path,
+                    "OLIC-CH(train): small_valid=%.2f anchor_valid=%.2f shared_table=%.4f shared_service=%.4f"
+                    % (
+                        train_log.get('small_valid_obj_per_actor', 0.0),
+                        train_log.get('anchor_valid_obj_per_actor', 0.0),
+                        train_log.get('shared_table_mean', 0.0),
+                        train_log.get('shared_service_mean', 0.0),
+                    )
+                )
         if args.use_pairwise_refiner and 'pair_pos_mean' in train_log:
             print_log(
                 save_path,
@@ -495,6 +528,17 @@ def main():
                         test_log.get('olic_valid_obj_per_actor', 0.0),
                     )
                 )
+                if 'small_valid_obj_per_actor' in test_log:
+                    print_log(
+                        save_path,
+                        "OLIC-CH(test): small_valid=%.2f anchor_valid=%.2f shared_table=%.4f shared_service=%.4f"
+                        % (
+                            test_log.get('small_valid_obj_per_actor', 0.0),
+                            test_log.get('anchor_valid_obj_per_actor', 0.0),
+                            test_log.get('shared_table_mean', 0.0),
+                            test_log.get('shared_service_mean', 0.0),
+                        )
+                    )
             if args.use_pairwise_refiner and 'pair_pos_mean' in test_log:
                 print_log(
                     save_path,
@@ -595,10 +639,16 @@ def train(train_loader, model, criterion, optimizer, epoch):
         object_boxes_xyxy = None
         object_valid_mask = None
         object_scores = None
+        object_token_id = None
+        object_family_id = None
         if args.use_olic and 'object_boxes_xyxy' in targets[0]:
             object_boxes_xyxy = torch.stack([t['object_boxes_xyxy'] for t in targets])
             object_valid_mask = torch.stack([t['object_valid_mask'] for t in targets])
             object_scores = torch.stack([t['object_scores'] for t in targets])
+            if 'object_token_id' in targets[0]:
+                object_token_id = torch.stack([t['object_token_id'] for t in targets])
+            if 'object_family_id' in targets[0]:
+                object_family_id = torch.stack([t['object_family_id'] for t in targets])
 
         num_batch = images.shape[0]
         num_frame = images.shape[1]
@@ -609,6 +659,8 @@ def train(train_loader, model, criterion, optimizer, epoch):
             object_boxes_xyxy=object_boxes_xyxy,
             object_valid_mask=object_valid_mask,
             object_scores=object_scores,
+            object_family_id=object_family_id,
+            object_token_id=object_token_id,
             olic_warmup_scale=olic_warmup_scale,
         )
 
@@ -661,6 +713,10 @@ def train(train_loader, model, criterion, optimizer, epoch):
                     olic_attn_entropy=float(outputs['olic_attn_entropy'].mean().item()),
                     olic_attn_top1_mean=float(outputs['olic_attn_top1_mean'].mean().item()),
                     olic_valid_obj_per_actor=float(outputs['olic_valid_obj_per_actor'].mean().item()),
+                    small_valid_obj_per_actor=float(outputs['small_valid_obj_per_actor'].mean().item()),
+                    anchor_valid_obj_per_actor=float(outputs['anchor_valid_obj_per_actor'].mean().item()),
+                    shared_table_mean=float(outputs['shared_table_mean'].mean().item()),
+                    shared_service_mean=float(outputs['shared_service_mean'].mean().item()),
                 )
             pred_group_idx = outputs['pred_activities'].argmax(dim=-1)
             no_group_ratio = (pred_group_idx == args.num_class).float().mean()
@@ -722,10 +778,16 @@ def validate(test_loader, model, criterion, metrics, epoch):
         object_boxes_xyxy = None
         object_valid_mask = None
         object_scores = None
+        object_token_id = None
+        object_family_id = None
         if args.use_olic and 'object_boxes_xyxy' in targets[0]:
             object_boxes_xyxy = torch.stack([t['object_boxes_xyxy'] for t in targets])
             object_valid_mask = torch.stack([t['object_valid_mask'] for t in targets])
             object_scores = torch.stack([t['object_scores'] for t in targets])
+            if 'object_token_id' in targets[0]:
+                object_token_id = torch.stack([t['object_token_id'] for t in targets])
+            if 'object_family_id' in targets[0]:
+                object_family_id = torch.stack([t['object_family_id'] for t in targets])
 
         # compute output
         outputs = model(
@@ -733,6 +795,8 @@ def validate(test_loader, model, criterion, metrics, epoch):
             object_boxes_xyxy=object_boxes_xyxy,
             object_valid_mask=object_valid_mask,
             object_scores=object_scores,
+            object_family_id=object_family_id,
+            object_token_id=object_token_id,
             olic_warmup_scale=olic_warmup_scale,
         )
 
@@ -765,6 +829,10 @@ def validate(test_loader, model, criterion, metrics, epoch):
                     olic_attn_entropy=float(outputs['olic_attn_entropy'].mean().item()),
                     olic_attn_top1_mean=float(outputs['olic_attn_top1_mean'].mean().item()),
                     olic_valid_obj_per_actor=float(outputs['olic_valid_obj_per_actor'].mean().item()),
+                    small_valid_obj_per_actor=float(outputs['small_valid_obj_per_actor'].mean().item()),
+                    anchor_valid_obj_per_actor=float(outputs['anchor_valid_obj_per_actor'].mean().item()),
+                    shared_table_mean=float(outputs['shared_table_mean'].mean().item()),
+                    shared_service_mean=float(outputs['shared_service_mean'].mean().item()),
                 )
             pred_group_idx = outputs['pred_activities'].argmax(dim=-1)
             no_group_ratio = (pred_group_idx == args.num_class).float().mean()
