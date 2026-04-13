@@ -341,6 +341,7 @@ class GADTR(nn.Module):
                 "membership": membership,
                 "pairwise_affinity_logits": zero_pair,
                 "pairwise_affinity_probs": zero_pair,
+                "pairwise_affinity_signed": zero_pair,
                 "pairwise_valid_mask": pair_valid,
                 "pairwise_refine_delta_mean": actor_clip.new_tensor(0.0),
                 "membership_entropy": entropy,
@@ -368,9 +369,12 @@ class GADTR(nn.Module):
         pair_valid = pair_valid & (~eye)
         pair_logits = pair_logits.masked_fill(~pair_valid, 0.0)
         pair_probs = torch.sigmoid(pair_logits) * pair_valid.float()
+        # Signed affinity lets PMR both support same-group links and suppress
+        # mismatched group assignments, instead of only doing non-negative diffusion.
+        pair_signed = (2.0 * torch.sigmoid(pair_logits) - 1.0) * pair_valid.float()
 
         base_probs = F.softmax(base_logits, dim=1) * actor_valid.unsqueeze(1).float()
-        support = torch.einsum('bgi,bij->bgj', base_probs, pair_probs)
+        support = torch.einsum('bgi,bij->bgj', base_probs, pair_signed)
         support = support * actor_valid.unsqueeze(1).float()
         refined_logits = base_logits + self.pairwise_refine_scale * support
         membership = F.softmax(refined_logits, dim=1)
@@ -388,6 +392,7 @@ class GADTR(nn.Module):
             "membership": membership,
             "pairwise_affinity_logits": pair_logits,
             "pairwise_affinity_probs": pair_probs,
+            "pairwise_affinity_signed": pair_signed,
             "pairwise_valid_mask": pair_valid,
             "pairwise_refine_delta_mean": refine_delta_mean,
             "membership_entropy": membership_entropy,
@@ -745,6 +750,7 @@ class GADTR(nn.Module):
             "membership_logits_refined": pairwise_out["membership_logits_refined"],
             "pairwise_affinity_logits": pairwise_out["pairwise_affinity_logits"],
             "pairwise_affinity_probs": pairwise_out["pairwise_affinity_probs"],
+            "pairwise_affinity_signed": pairwise_out["pairwise_affinity_signed"],
             "pairwise_valid_mask": pairwise_out["pairwise_valid_mask"],
             "pairwise_refine_delta_mean": pairwise_out["pairwise_refine_delta_mean"].detach(),
             "membership_entropy": pairwise_out["membership_entropy"].detach(),
