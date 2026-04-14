@@ -91,6 +91,9 @@ class GADTR(nn.Module):
         self.pairwise_use_geom_relation = bool(getattr(args, 'pairwise_use_geom_relation', True))
         self.pairwise_use_small_object_relation = bool(getattr(args, 'pairwise_use_small_object_relation', True))
         self.pairwise_use_anchor_relation = bool(getattr(args, 'pairwise_use_anchor_relation', True))
+        self.pmr_anchor_source = str(getattr(args, 'pmr_anchor_source', 'gdino')).lower()
+        if self.pmr_anchor_source not in {'gdino', 'yolo'}:
+            self.pmr_anchor_source = 'gdino'
         self.pairwise_geom_dim = 6
         self.pairwise_small_obj_dim = 2
         self.pairwise_anchor_dim = 2
@@ -329,14 +332,17 @@ class GADTR(nn.Module):
         return torch.stack((cos, diff_norm), dim=-1)
 
     @staticmethod
-    def _aggregate_anchor_relations(anchor_attn, object_scores, object_family_id, object_valid_mask):
+    def _aggregate_anchor_relations(anchor_attn, object_scores, object_family_id, object_valid_mask, anchor_source='gdino'):
         # anchor_attn: [B, T, N, M], object_scores/family/valid: [B, T, M]
         score = object_scores.float().clamp(min=0.0)
         valid = object_valid_mask > 0.5
         family = object_family_id.long()
 
         table_mask = valid & (family == 5)
-        service_mask = valid & (family == 4)
+        if str(anchor_source).lower() == 'yolo':
+            service_mask = torch.zeros_like(valid)
+        else:
+            service_mask = valid & (family == 4)
 
         def _shared(mask):
             weighted = anchor_attn * (score * mask.float()).unsqueeze(2)
@@ -813,6 +819,7 @@ class GADTR(nn.Module):
                     object_scores,
                     object_family_id,
                     object_valid_mask,
+                    anchor_source=self.pmr_anchor_source,
                 )
         pairwise_out = self._run_pairwise_refiner(
             actor_clip=inst_repr,

@@ -158,6 +158,8 @@ anchor_objrel_group.add_argument('--pairwise_use_anchor_relation', dest='pairwis
 anchor_objrel_group.add_argument('--no_pairwise_use_anchor_relation', dest='pairwise_use_anchor_relation', action='store_false',
                                  help='disable shared table/service anchor relation in pairwise affinity')
 parser.set_defaults(pairwise_use_anchor_relation=True)
+parser.add_argument('--pmr_anchor_source', default='auto', type=str, choices=['auto', 'gdino', 'yolo'],
+                    help='anchor relation source for PMR: gdino keeps shared_table/shared_service, yolo uses table-only anchor relation, auto infers from object_tracks_pkl')
 geomrel_group = parser.add_mutually_exclusive_group()
 geomrel_group.add_argument('--pairwise_use_geom_relation', dest='pairwise_use_geom_relation', action='store_true',
                            help='use clip-level geometry in pairwise affinity')
@@ -294,6 +296,9 @@ def main():
         args.olic_attn_tau = 1.0
     if args.olic_geom_scale_max <= 0:
         args.olic_geom_scale_max = 2.0
+    if args.pmr_anchor_source == 'auto':
+        object_source_hint = str(args.object_tracks_pkl or '').lower()
+        args.pmr_anchor_source = 'yolo' if 'yolo' in object_source_hint else 'gdino'
 
     if args.use_olic:
         print_log(save_path, f"----------------------------------------------------------------")
@@ -319,7 +324,8 @@ def main():
             save_path,
             f"PMR cfg: refine_scale={args.pairwise_refine_scale}, loss_coef={args.pairwise_loss_coef}, "
             f"use_geom={int(args.pairwise_use_geom_relation)}, use_obj={int(args.pairwise_use_object_relation)}, "
-            f"use_small_obj={int(args.pairwise_use_small_object_relation)}, use_anchor={int(args.pairwise_use_anchor_relation)}"
+            f"use_small_obj={int(args.pairwise_use_small_object_relation)}, use_anchor={int(args.pairwise_use_anchor_relation)}, "
+            f"anchor_source={args.pmr_anchor_source}"
         )
 
     # set random seed

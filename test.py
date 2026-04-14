@@ -149,6 +149,8 @@ anchor_objrel_group.add_argument('--pairwise_use_anchor_relation', dest='pairwis
 anchor_objrel_group.add_argument('--no_pairwise_use_anchor_relation', dest='pairwise_use_anchor_relation', action='store_false',
                                  help='disable shared table/service anchor relation in pairwise affinity')
 parser.set_defaults(pairwise_use_anchor_relation=True)
+parser.add_argument('--pmr_anchor_source', default='auto', type=str, choices=['auto', 'gdino', 'yolo'],
+                    help='anchor relation source for PMR: gdino keeps shared_table/shared_service, yolo uses table-only anchor relation, auto infers from object_tracks_pkl')
 geomrel_group = parser.add_mutually_exclusive_group()
 geomrel_group.add_argument('--pairwise_use_geom_relation', dest='pairwise_use_geom_relation', action='store_true',
                            help='use clip-level geometry in pairwise affinity')
@@ -221,6 +223,9 @@ parser.add_argument('--eval_image_width', default=1280, type=int, help='Image wi
 parser.add_argument('--eval_image_height', default=720, type=int, help='Image height for evaluation (must match gt_tracks.txt)')
 
 args = parser.parse_args()
+if args.pmr_anchor_source == 'auto':
+    object_source_hint = str(args.object_tracks_pkl or '').lower()
+    args.pmr_anchor_source = 'yolo' if 'yolo' in object_source_hint else 'gdino'
 path = None
 
 SEQS_CAFE = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24]
