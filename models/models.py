@@ -346,7 +346,7 @@ class GADTR(nn.Module):
 
         def _shared(mask):
             weighted = anchor_attn * (score * mask.float()).unsqueeze(2)
-            shared_t = torch.einsum('btnm,btjm->btij', anchor_attn, weighted)
+            shared_t = torch.einsum('btim,btjm->btij', anchor_attn, weighted)
             frame_has = (mask.sum(dim=-1) > 0).float()
             denom = frame_has.sum(dim=1, keepdim=True).clamp(min=1.0).unsqueeze(-1)
             shared = shared_t.sum(dim=1) / denom
@@ -769,6 +769,8 @@ class GADTR(nn.Module):
                 "olic_attn_entropy": actor_hs.new_tensor(0.0),
                 "olic_attn_top1_mean": actor_hs.new_tensor(0.0),
                 "olic_valid_obj_per_actor": actor_hs.new_tensor(0.0),
+                "small_valid_obj_per_actor": actor_hs.new_tensor(0.0),
+                "anchor_valid_obj_per_actor": actor_hs.new_tensor(0.0),
                 "olic_geom_scale": actor_hs.new_tensor(0.0),
             }
 
