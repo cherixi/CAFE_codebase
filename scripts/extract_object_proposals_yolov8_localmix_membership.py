@@ -1177,6 +1177,177 @@ def run_localmix_for_frame(
     }
 
 
+def run_localmix_for_frames(
+    model,
+    frame_items: Sequence[Tuple[int, Path]],
+    prompt_packs: Sequence[PromptPack],
+    local_small_branch_mode: str,
+    person_tracks: Dict,
+    vid: int,
+    cid: int,
+    min_area: float,
+    allow_unknown_phrase: bool,
+    device: str,
+    phone_max_area: float,
+    local_person_expand_ratio: float,
+    local_person_expand_ratio_y: float,
+    local_merge_iou_thr: float,
+    local_merge_center_thr: float,
+    local_merge_center_aux_iou_thr: float,
+    local_roi_dedup_iou: float,
+    local_max_person_crops: int,
+    local_fallback_global_when_no_person: bool,
+) -> Tuple[List[Tuple[Optional[np.ndarray], List[dict]]], List[List[Tuple[float, float, float, float]]], List[Dict[str, Any]]]:
+    mode = str(local_small_branch_mode).strip().lower()
+    if mode not in {"off", "rescue", "full"}:
+        raise ValueError(f"Unsupported --local_small_branch_mode: {local_small_branch_mode}")
+    if not frame_items:
+        return [], [], []
+
+    local_small_packs, global_service_packs = split_prompt_packs_for_localmix(prompt_packs)
+    paths = [pth for _, pth in frame_items]
+    pil_images = [Image.open(pth).convert("RGB") for pth in paths]
+    image_sources = [np.asarray(pil) for pil in pil_images]
+
+    if mode == "off":
+        batch_results = run_packs_for_pil_images_hf(
+            model=model,
+            pil_images=pil_images,
+            prompt_packs=prompt_packs,
+            min_area=min_area,
+            allow_unknown_phrase=allow_unknown_phrase,
+            device=device,
+            phone_max_area=phone_max_area,
+            source_tag="global",
+        )
+        results = []
+        for image_source, raw_props in zip(image_sources, batch_results):
+            for p in raw_props:
+                p.setdefault("source", "global")
+            results.append((image_source, raw_props))
+        return results, [[] for _ in frame_items], [
+            {
+                "local_branch_used": False,
+                "local_rois": 0,
+                "local_crops": 0,
+                "local_props": 0,
+                "fallback_global_no_person": False,
+            }
+            for _ in frame_items
+        ]
+
+    global_packs = global_service_packs if mode == "full" else list(prompt_packs)
+    if global_packs:
+        global_batches = run_packs_for_pil_images_hf(
+            model=model,
+            pil_images=pil_images,
+            prompt_packs=global_packs,
+            min_area=min_area,
+            allow_unknown_phrase=allow_unknown_phrase,
+            device=device,
+            phone_max_area=phone_max_area,
+            source_tag="global",
+        )
+    else:
+        global_batches = [[] for _ in frame_items]
+
+    raw_props_list: List[List[dict]] = []
+    local_rois_list: List[List[Tuple[float, float, float, float]]] = [[] for _ in frame_items]
+    local_info_list: List[Dict[str, Any]] = []
+    need_local_list: List[bool] = []
+
+    for raw_props in global_batches:
+        for p in raw_props:
+            p.setdefault("source", "global")
+        raw_props_list.append(list(raw_props))
+        need_local = bool(local_small_packs)
+        if mode == "rescue":
+            need_local = need_local and (not any(p.get("pack_name") in {"A", "B", "C"} for p in raw_props))
+        need_local_list.append(need_local)
+        local_info_list.append(
+            {
+                "local_branch_used": need_local,
+                "local_rois": 0,
+                "local_crops": 0,
+                "local_props": 0,
+                "fallback_global_no_person": False,
+            }
+        )
+
+    crop_images: List[Image.Image] = []
+    crop_meta: List[Tuple[int, int, Tuple[float, float, float, float]]] = []
+    fallback_images: List[Image.Image] = []
+    fallback_meta: List[int] = []
+
+    for frame_idx, ((fid, _), pil_full) in enumerate(zip(frame_items, pil_images)):
+        if not need_local_list[frame_idx]:
+            continue
+        local_person_boxes = get_expanded_person_boxes_xyxy(
+            person_tracks=person_tracks,
+            vid=vid,
+            cid=cid,
+            fid=fid,
+            expand_ratio=local_person_expand_ratio,
+            expand_ratio_y=local_person_expand_ratio_y,
+        )
+        local_rois = build_localmix_rois_from_person_boxes(
+            person_boxes_xyxy=local_person_boxes,
+            merge_iou_thr=local_merge_iou_thr,
+            merge_center_thr=local_merge_center_thr,
+            merge_center_aux_iou_thr=local_merge_center_aux_iou_thr,
+            dedup_iou_thr=local_roi_dedup_iou,
+            max_crops=local_max_person_crops,
+        )
+        eff_rois: List[Tuple[float, float, float, float]] = []
+        for roi_idx, roi in enumerate(local_rois):
+            crop_img, eff_roi = crop_pil_with_norm_roi(pil_full, roi)
+            if crop_img is None or eff_roi is None:
+                continue
+            crop_images.append(crop_img)
+            crop_meta.append((frame_idx, roi_idx, eff_roi))
+            eff_rois.append(eff_roi)
+        local_rois_list[frame_idx] = eff_rois
+        local_info_list[frame_idx]["local_rois"] = len(eff_rois)
+        local_info_list[frame_idx]["local_crops"] = len(eff_rois)
+        if not eff_rois and local_fallback_global_when_no_person:
+            fallback_images.append(pil_full)
+            fallback_meta.append(frame_idx)
+            local_info_list[frame_idx]["fallback_global_no_person"] = True
+
+    if crop_images:
+        local_batches = run_packs_for_pil_images_hf(
+            model=model,
+            pil_images=crop_images,
+            prompt_packs=local_small_packs,
+            min_area=min_area,
+            allow_unknown_phrase=allow_unknown_phrase,
+            device=device,
+            phone_max_area=phone_max_area,
+            source_tag="local",
+        )
+        for (frame_idx, roi_idx, eff_roi), roi_props in zip(crop_meta, local_batches):
+            mapped = map_local_props_to_full_image(roi_props, eff_roi, roi_idx)
+            raw_props_list[frame_idx].extend(mapped)
+            local_info_list[frame_idx]["local_props"] += len(mapped)
+
+    if fallback_images:
+        fallback_batches = run_packs_for_pil_images_hf(
+            model=model,
+            pil_images=fallback_images,
+            prompt_packs=local_small_packs,
+            min_area=min_area,
+            allow_unknown_phrase=allow_unknown_phrase,
+            device=device,
+            phone_max_area=phone_max_area,
+            source_tag="global",
+        )
+        for frame_idx, fb_props in zip(fallback_meta, fallback_batches):
+            raw_props_list[frame_idx].extend(fb_props)
+            local_info_list[frame_idx]["local_props"] += len(fb_props)
+
+    return list(zip(image_sources, raw_props_list)), local_rois_list, local_info_list
+
+
 def build_prompt_packs(args: argparse.Namespace) -> List[PromptPack]:
     return [
         PromptPack(
@@ -2294,8 +2465,7 @@ def main() -> None:
         ]
 
         use_frame_batch = (
-            local_mode == "off"
-            and model_backend in {"hf", "yolo"}
+            model_backend in {"hf", "yolo"}
             and args.frame_batch_size > 1
         )
         target_batch_size = max(1, int(args.frame_batch_size)) if use_frame_batch else 1
@@ -2304,7 +2474,7 @@ def main() -> None:
         clip_frames = clip["frames"]
         frame_idx = 0
         while frame_idx < len(clip_frames):
-            if local_mode == "off":
+            if use_frame_batch:
                 take = min(current_batch_size, len(clip_frames) - frame_idx)
             else:
                 take = 1
@@ -2352,19 +2522,15 @@ def main() -> None:
                         for _ in frame_batch
                     ]
                 else:
-                    batch_results = []
-                    batch_local_rois = []
-                    batch_local_info = []
-                    for cur_fid, pth in frame_batch:
-                        image_source, raw_props, local_rois, local_info = run_localmix_for_frame(
+                    if use_frame_batch:
+                        batch_results, batch_local_rois, batch_local_info = run_localmix_for_frames(
                             model=model,
-                            image_path=pth,
+                            frame_items=frame_batch,
                             prompt_packs=prompt_packs,
                             local_small_branch_mode=local_mode,
                             person_tracks=person_tracks,
                             vid=vid,
                             cid=cid,
-                            fid=cur_fid,
                             min_area=args.min_area,
                             allow_unknown_phrase=args.allow_unknown_phrase,
                             device=args.device,
@@ -2378,9 +2544,36 @@ def main() -> None:
                             local_max_person_crops=args.local_max_person_crops,
                             local_fallback_global_when_no_person=args.local_fallback_global_when_no_person,
                         )
-                        batch_results.append((image_source, raw_props))
-                        batch_local_rois.append(local_rois)
-                        batch_local_info.append(local_info)
+                    else:
+                        batch_results = []
+                        batch_local_rois = []
+                        batch_local_info = []
+                        for cur_fid, pth in frame_batch:
+                            image_source, raw_props, local_rois, local_info = run_localmix_for_frame(
+                                model=model,
+                                image_path=pth,
+                                prompt_packs=prompt_packs,
+                                local_small_branch_mode=local_mode,
+                                person_tracks=person_tracks,
+                                vid=vid,
+                                cid=cid,
+                                fid=cur_fid,
+                                min_area=args.min_area,
+                                allow_unknown_phrase=args.allow_unknown_phrase,
+                                device=args.device,
+                                phone_max_area=args.phone_max_area,
+                                local_person_expand_ratio=args.local_person_expand_ratio,
+                                local_person_expand_ratio_y=args.local_person_expand_ratio_y,
+                                local_merge_iou_thr=args.local_merge_iou_thr,
+                                local_merge_center_thr=args.local_merge_center_thr,
+                                local_merge_center_aux_iou_thr=args.local_merge_center_aux_iou_thr,
+                                local_roi_dedup_iou=args.local_roi_dedup_iou,
+                                local_max_person_crops=args.local_max_person_crops,
+                                local_fallback_global_when_no_person=args.local_fallback_global_when_no_person,
+                            )
+                            batch_results.append((image_source, raw_props))
+                            batch_local_rois.append(local_rois)
+                            batch_local_info.append(local_info)
             except RuntimeError as exc:
                 if (
                     use_frame_batch
