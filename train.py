@@ -29,8 +29,8 @@ parser = argparse.ArgumentParser(description='Group Activity Detection train cod
 parser.add_argument('--dataset', default='cafe', type=str, help='dataset name')
 parser.add_argument('--val_mode', action='store_true')
 parser.add_argument('--split', default='place', type=str, help='dataset split. place or view')
-# parser.add_argument('--data_path', default='/share/share/aixi/Cafe_Dataset/Cafe_Dataset/Cafe_Dataset/Dataset/', type=str, help='data path')
-parser.add_argument('--data_path', default='/home/ziyang/aixi/Dataset/Cafe_Dataset/Cafe_Dataset/Dataset/', type=str, help='data path')
+parser.add_argument('--data_path', default='/share/share/aixi/Cafe_Dataset/Cafe_Dataset/Cafe_Dataset/Dataset/', type=str, help='data path')
+# parser.add_argument('--data_path', default='/home/ziyang/aixi/Dataset/Cafe_Dataset/Cafe_Dataset/Dataset/', type=str, help='data path')
 parser.add_argument('--tracks_source', default='gt', type=str, choices=['gt', 'pred'],
                     help='which track pkl to load under data_path/cafe: gt_tracks.pkl or pred_tracks_aligned_to_gt_slots.pkl')
 parser.add_argument('--tracks_pkl_path', default='', type=str,
