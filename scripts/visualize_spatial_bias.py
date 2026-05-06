@@ -76,6 +76,7 @@ def apply_defaults(cfg):
         "drop_rate": 0.1,
         "no_mae": False,
         "mae_fusion": "adaptive_two_branch",
+        "mae_fusion_stage": "post_group",
         "mae_version": "v2",
         "videomae_feats_path": "./videomae_features_giant",
     }

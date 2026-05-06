@@ -46,6 +46,9 @@ parser.add_argument('--videomae_feats_path', default='./videomae_features_giant'
 parser.add_argument('--mae_fusion', default='adaptive_two_branch', type=str,
                     choices=['none', 'static_add', 'static_concat', 'static_pool', 'adaptive_shared', 'adaptive_two_branch'],
                     help='VideoMAE fusion mode')
+parser.add_argument('--mae_fusion_stage', default='post_group', type=str,
+                    choices=['post_group', 'pre_group'],
+                    help='where to apply VideoMAE fusion: after group transformer (post_group) or before group transformer grouping (pre_group)')
 
 # Backbone parameters
 parser.add_argument('--backbone', default='resnet18', type=str, help='feature extraction backbone (resnet18, resnet50, dinov2_vits14, dinov2_vitb14, dinov2_vitl14, dinov2_vitg14)')
@@ -191,6 +194,7 @@ def main():
         print_log(save_path, f"VideoMAE Enhancement: ENABLED")
         print_log(save_path, f"Version: {args.mae_version.upper()} (Dim: {1408 if args.mae_version == 'v2' else 768})")
         print_log(save_path, f"Fusion: {args.mae_fusion}")
+        print_log(save_path, f"Fusion Stage: {args.mae_fusion_stage}")
         print_log(save_path, f"Feature Path: {args.videomae_feats_path}")
         print_log(save_path, f"----------------------------------------------------------------")
     else:

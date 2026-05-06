@@ -85,10 +85,11 @@ class GADTR(nn.Module):
         self.group_match_emb = nn.Linear(self.hidden_dim, self.hidden_dim)
 
         self.mae_fusion = getattr(args, 'mae_fusion', 'adaptive_two_branch')
+        self.mae_fusion_stage = getattr(args, 'mae_fusion_stage', 'post_group')
         self.use_mae = getattr(args, 'use_mae', False) and self.mae_fusion != 'none'
         if self.use_mae:
             mae_dim = getattr(args, 'mae_dim', 768)
-            print(f"Initializing VideoMAE Adapter with dim={mae_dim}, fusion={self.mae_fusion}...")
+            print(f"Initializing VideoMAE Adapter with dim={mae_dim}, fusion={self.mae_fusion}, stage={self.mae_fusion_stage}...")
             self.videomae_adapter = VideoMAEAdapter(
                 global_dim=mae_dim,
                 hidden_dim=self.hidden_dim,
@@ -185,9 +186,25 @@ class GADTR(nn.Module):
             actor_graph_out, _ = self.frame_graph(actor_graph_in, boxes_for_graph, attn_mask=actor_mask)
             actor_features = actor_graph_out.reshape(bs, t, n, self.hidden_dim)
 
+        group_query_embed = self.group_query_emb.weight
+        if mae_feats is not None and self.videomae_adapter is not None and self.mae_fusion_stage == 'pre_group':
+            if mae_feats.dim() == 3:
+                mae_feats = mae_feats.squeeze(1)
+
+            mae_feats_expanded = mae_feats.unsqueeze(1).repeat(1, t, 1).reshape(bs * t, -1)
+            actor_features_flat = actor_features.reshape(bs * t, n, -1)
+            group_query_flat = self.group_query_emb.weight.unsqueeze(0).expand(bs * t, -1, -1)
+
+            actor_features_flat, group_query_flat = self.videomae_adapter(
+                actor_features_flat, group_query_flat, mae_feats_expanded
+            )
+
+            actor_features = actor_features_flat.reshape(bs, t, n, -1)
+            group_query_embed = group_query_flat.reshape(bs, t, self.num_group_tokens, -1)
+
         # group transformer
         hs, actor_att, feature_att = self.group_transformer(src, actor_mask, group_dummy_mask,
-                                                            self.group_query_emb.weight, pos, actor_features)
+                                                            group_query_embed, pos, actor_features)
         # [1, bs * t, n + k, f'], [1, bs * t, k, n], [1, bs * t, n + k, oh x ow]   M: # group tokens, K: # boxes
 
         actor_hs = hs[0, :, :n]
@@ -197,7 +214,7 @@ class GADTR(nn.Module):
         actor_hs = actor_features + actor_hs
         group_hs = group_hs.reshape(bs, t, self.num_group_tokens, -1)
 
-        if mae_feats is not None and self.videomae_adapter is not None:
+        if mae_feats is not None and self.videomae_adapter is not None and self.mae_fusion_stage == 'post_group':
             # if not getattr(self, 'has_printed_videomae_status', False):
             #     print("VideoMAE features detected in forward pass. Applying enhancement...")
             #     self.has_printed_videomae_status = True

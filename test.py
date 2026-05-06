@@ -42,6 +42,9 @@ parser.add_argument('--videomae_feats_path', default='./videomae_features_giant'
 parser.add_argument('--mae_fusion', default='adaptive_two_branch', type=str,
                     choices=['none', 'static_add', 'static_concat', 'static_pool', 'adaptive_shared', 'adaptive_two_branch'],
                     help='VideoMAE fusion mode')
+parser.add_argument('--mae_fusion_stage', default='post_group', type=str,
+                    choices=['post_group', 'pre_group'],
+                    help='where to apply VideoMAE fusion: after group transformer (post_group) or before group transformer grouping (pre_group)')
 
 # Backbone parameters
 parser.add_argument('--backbone', default='resnet18', type=str, help='feature extraction backbone (resnet18, resnet50, dinov2_vits14, dinov2_vitb14, dinov2_vitl14, dinov2_vitg14)')

@@ -220,6 +220,7 @@ def default_config(args):
         "tcn_dropout": args.tcn_dropout,
         "temporal_agg_mode": args.temporal_agg_mode,
         "mae_fusion": args.mae_fusion,
+        "mae_fusion_stage": args.mae_fusion_stage,
         "use_mae": use_mae,
         "mae_dim": mae_dim if use_mae else 0,
         "image_height": args.image_height,
@@ -278,6 +279,7 @@ def main():
     parser.add_argument("--temporal_agg_mode", default="learned_pool", choices=["learned_pool", "frame_mean_main"])
     parser.add_argument("--mae_fusion", default="adaptive_two_branch",
                         choices=["none", "static_add", "static_concat", "static_pool", "adaptive_shared", "adaptive_two_branch"])
+    parser.add_argument("--mae_fusion_stage", default="post_group", choices=["post_group", "pre_group"])
     parser.add_argument("--mae_version", default="v2", choices=["v1", "v2"])
     parser.add_argument("--no_mae", action="store_true")
     parser.add_argument("--frozen_batch_norm", action="store_true")
