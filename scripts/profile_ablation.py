@@ -212,6 +212,7 @@ def default_config(args):
         "num_group_tokens": args.num_group_tokens,
         "distance_threshold": args.distance_threshold,
         "hoi_mode": args.hoi_mode,
+        "hoi_penalty_type": args.hoi_penalty_type,
         "hoi_nheads": args.hoi_nheads,
         "hoi_topk": args.hoi_topk,
         "hoi_hard_thresh": args.hoi_hard_thresh,
@@ -272,6 +273,7 @@ def main():
     parser.add_argument("--hoi_nheads", default=4, type=int)
     parser.add_argument("--hoi_topk", default=0, type=int)
     parser.add_argument("--hoi_mode", default="penalty", choices=["none", "bias", "hard_mask", "penalty"])
+    parser.add_argument("--hoi_penalty_type", default="quadratic", choices=["quadratic", "linear", "exp"])
     parser.add_argument("--hoi_hard_thresh", default=None, type=float)
     parser.add_argument("--temporal_layers", default=3, type=int)
     parser.add_argument("--tcn_kernel_size", default=3, type=int)

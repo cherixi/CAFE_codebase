@@ -68,6 +68,7 @@ def apply_defaults(cfg):
         "hoi_nheads": 4,
         "hoi_topk": 0,
         "hoi_mode": "penalty",
+        "hoi_penalty_type": "quadratic",
         "hoi_hard_thresh": None,
         "temporal_layers": 3,
         "tcn_kernel_size": 3,

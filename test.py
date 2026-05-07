@@ -72,6 +72,9 @@ parser.add_argument('--hoi_topk', default=0, type=int, help='topk for HOI graph 
 parser.add_argument('--hoi_mode', default='penalty', type=str,
                     choices=['none', 'bias', 'hard_mask', 'penalty'],
                     help='HOI graph ablation mode')
+parser.add_argument('--hoi_penalty_type', default='quadratic', type=str,
+                    choices=['quadratic', 'linear', 'exp'],
+                    help='distance soft penalty type for hoi_mode=penalty')
 parser.add_argument('--hoi_hard_thresh', default=None, type=float,
                     help='distance threshold for hard_mask mode (if None, use distance_threshold)')
 parser.add_argument('--temporal_agg_mode', default='learned_pool', type=str,

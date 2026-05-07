@@ -48,6 +48,7 @@ class GADTR(nn.Module):
         self.hoi_mode = getattr(args, 'hoi_mode', 'penalty')
         hoi_nheads = getattr(args, 'hoi_nheads', 4)
         hoi_topk = getattr(args, 'hoi_topk', 0)
+        hoi_penalty_type = getattr(args, 'hoi_penalty_type', 'quadratic')
         hoi_hard_thresh = getattr(args, 'hoi_hard_thresh', None)
         if hoi_hard_thresh is None:
             hoi_hard_thresh = getattr(args, 'distance_threshold', None)
@@ -64,6 +65,7 @@ class GADTR(nn.Module):
                 use_geom_bias=use_geom_bias,
                 use_logit_penalty=use_logit_penalty,
                 hard_mask_thresh=hard_mask_thresh,
+                penalty_type=hoi_penalty_type,
             )
         else:
             self.frame_graph = None

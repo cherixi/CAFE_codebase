@@ -11,7 +11,8 @@ class FrameHOIGraph(nn.Module):
     """
 
     def __init__(self, d_model=256, nhead=4, dropout=0.1, topk=0,
-                 use_geom_bias=True, use_logit_penalty=True, hard_mask_thresh=None):
+                 use_geom_bias=True, use_logit_penalty=True, hard_mask_thresh=None,
+                 penalty_type="quadratic"):
         super().__init__()
         self.d_model = d_model
         self.nhead = nhead
@@ -26,6 +27,9 @@ class FrameHOIGraph(nn.Module):
         self.use_geom_bias = use_geom_bias
         self.use_logit_penalty = use_logit_penalty
         self.hard_mask_thresh = hard_mask_thresh
+        self.penalty_type = penalty_type
+        if self.penalty_type not in ["quadratic", "linear", "exp"]:
+            raise ValueError(f"Unknown HOI distance penalty type: {self.penalty_type}")
 
         # Geometry encoder -> per-head bias
         if self.use_geom_bias:
@@ -55,6 +59,17 @@ class FrameHOIGraph(nn.Module):
         )
 
         self.topk = topk  # keep top-k neighbors if >0
+
+    def _distance_penalty(self, dist, sigma):
+        ratio = dist.unsqueeze(1) / sigma
+        if self.penalty_type == "quadratic":
+            return ratio ** 2
+        if self.penalty_type == "linear":
+            return ratio
+        if self.penalty_type == "exp":
+            # Clamp prevents overflow if the learned sigma becomes very small.
+            return torch.exp(torch.clamp(ratio, max=20.0)) - 1.0
+        raise ValueError(f"Unknown HOI distance penalty type: {self.penalty_type}")
 
     def _pairwise_geometry(self, boxes):
         """
@@ -99,7 +114,7 @@ class FrameHOIGraph(nn.Module):
         # soft distance penalty
         if self.use_logit_penalty:
             sigma = torch.exp(self.log_sigma) + 1e-6
-            scores = scores - (dist.unsqueeze(1) ** 2) / (sigma ** 2)
+            scores = scores - self._distance_penalty(dist, sigma)
 
         if self.hard_mask_thresh is not None:
             hard_mask = dist > self.hard_mask_thresh
