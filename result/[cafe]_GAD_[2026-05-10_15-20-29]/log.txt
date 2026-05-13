@@ -1,0 +1,124 @@
+----------------------------------------------------------------
+VideoMAE Enhancement: ENABLED
+Version: V2 (Dim: 1408)
+Fusion: adaptive_two_branch
+Fusion Stage: post_group
+Feature Path: /home/ziyang/aixi/videomae_features_giant_8f
+----------------------------------------------------------------
+--------------------Number of parameters--------------------
+Total parameters: 103,596,055
+Trainable parameters: 31,195,927
+Frozen parameters: 72,400,128
+Frozen ratio: 69.9%
+--------------------Learning Rate Configuration--------------------
+Head learning rate: 1e-05
+Backbone learning rate: 1.0000000000000002e-06 (scale: 0.1)
+Backbone params count: 14,180,352
+Head params count: 17,015,575
+----- Train at epoch #1
+Loss: 2.0390
+Group class error: 74.36
+----- Train at epoch #2
+Loss: 1.0800
+Group class error: 38.19
+----- Train at epoch #3
+Loss: 0.8288
+Group class error: 19.94
+----- Train at epoch #4
+Loss: 0.7926
+Group class error: 16.86
+----- Train at epoch #5
+Loss: 0.7373
+Group class error: 15.52
+----- Train at epoch #6
+Loss: 0.6949
+Group class error: 13.85
+----- Train at epoch #7
+Loss: 0.6727
+Group class error: 13.06
+----- Train at epoch #8
+Loss: 0.6591
+Group class error: 12.47
+----- Train at epoch #9
+Loss: 0.6267
+Group class error: 12.13
+----- Test at epoch #9
+Loss: 1.7855
+Group class error: 35.32
+group mAP at 1.0: 17.14
+group mAP at 0.5: 37.58
+outlier mIoU: 67.08
+Updated summary and curves at epoch 9
+Saved best checkpoint for group_mAP_1.0: ./result/[cafe]_GAD_[2026-05-10_15-20-29]/best_group_mAP_1_0.pth
+Saved best checkpoint for group_mAP_0.5: ./result/[cafe]_GAD_[2026-05-10_15-20-29]/best_group_mAP_0_5.pth
+Saved best checkpoint for outlier_mIoU: ./result/[cafe]_GAD_[2026-05-10_15-20-29]/best_outlier_mIoU.pth
+Saved best checkpoint for loss: ./result/[cafe]_GAD_[2026-05-10_15-20-29]/best_loss.pth
+----- Train at epoch #10
+Loss: 0.6646
+Group class error: 12.69
+----- Test at epoch #10
+Loss: 2.2463
+Group class error: 35.07
+group mAP at 1.0: 13.79
+group mAP at 0.5: 36.32
+outlier mIoU: 66.53
+Updated summary and curves at epoch 10
+----- Train at epoch #11
+Loss: 0.5853
+Group class error: 10.58
+----- Test at epoch #11
+Loss: 1.9113
+Group class error: 30.13
+group mAP at 1.0: 14.01
+group mAP at 0.5: 38.55
+outlier mIoU: 65.58
+Updated summary and curves at epoch 11
+Saved best checkpoint for group_mAP_0.5: ./result/[cafe]_GAD_[2026-05-10_15-20-29]/best_group_mAP_0_5.pth
+----- Train at epoch #12
+Loss: 0.6131
+Group class error: 11.05
+----- Test at epoch #12
+Loss: 2.0245
+Group class error: 38.50
+group mAP at 1.0: 13.85
+group mAP at 0.5: 34.05
+outlier mIoU: 65.51
+Updated summary and curves at epoch 12
+----- Train at epoch #13
+Loss: 0.5603
+Group class error: 10.34
+----- Test at epoch #13
+Loss: 1.7476
+Group class error: 33.70
+group mAP at 1.0: 17.40
+group mAP at 0.5: 40.11
+outlier mIoU: 67.54
+Updated summary and curves at epoch 13
+Saved best checkpoint for group_mAP_1.0: ./result/[cafe]_GAD_[2026-05-10_15-20-29]/best_group_mAP_1_0.pth
+Saved best checkpoint for group_mAP_0.5: ./result/[cafe]_GAD_[2026-05-10_15-20-29]/best_group_mAP_0_5.pth
+Saved best checkpoint for outlier_mIoU: ./result/[cafe]_GAD_[2026-05-10_15-20-29]/best_outlier_mIoU.pth
+Saved best checkpoint for loss: ./result/[cafe]_GAD_[2026-05-10_15-20-29]/best_loss.pth
+----- Train at epoch #14
+Loss: 0.5628
+Group class error: 11.39
+----- Test at epoch #14
+Loss: 2.1999
+Group class error: 45.13
+group mAP at 1.0: 16.10
+group mAP at 0.5: 34.10
+outlier mIoU: 65.48
+Updated summary and curves at epoch 14
+----- Train at epoch #15
+Loss: 0.5302
+Group class error: 9.26
+----- Test at epoch #15
+Loss: 1.5894
+Group class error: 34.58
+group mAP at 1.0: 19.57
+group mAP at 0.5: 39.92
+outlier mIoU: 69.81
+Updated summary and curves at epoch 15
+Saved best checkpoint for group_mAP_1.0: ./result/[cafe]_GAD_[2026-05-10_15-20-29]/best_group_mAP_1_0.pth
+Saved best checkpoint for outlier_mIoU: ./result/[cafe]_GAD_[2026-05-10_15-20-29]/best_outlier_mIoU.pth
+Saved best checkpoint for loss: ./result/[cafe]_GAD_[2026-05-10_15-20-29]/best_loss.pth
+----- Train at epoch #16
