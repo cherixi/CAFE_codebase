@@ -2,10 +2,15 @@ import argparse
 import csv
 import json
 import os
+import sys
 from pathlib import Path
 from typing import Dict, List, Optional
 
 import torch
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 import util.misc as utils
 from test import build_parser as build_test_parser
@@ -29,9 +34,11 @@ from util.test_eval_utils import (
 METRIC_KEYS = ("group_mAP_1.0", "group_mAP_0.5", "outlier_mIoU")
 
 
-def parse_thresholds(raw: str) -> List[float]:
+def parse_thresholds(raw) -> List[float]:
+    if isinstance(raw, (list, tuple)):
+        raw = ",".join(str(v) for v in raw)
     values = []
-    for part in raw.split(","):
+    for part in str(raw).replace(" ", ",").split(","):
         part = part.strip()
         if not part:
             continue
@@ -239,7 +246,7 @@ def main():
         description="Evaluate all best checkpoints in a run directory with multiple group_threshold values."
     )
     parser.add_argument("--run_dir", required=True, type=Path, help="Training result directory containing best*.pth.")
-    parser.add_argument("--thresholds", default="0.45,0.50,0.55,0.60,0.65,0.70", type=parse_thresholds)
+    parser.add_argument("--thresholds", nargs="+", default=["0.45,0.50,0.55,0.60,0.65,0.70"])
     parser.add_argument("--checkpoint_glob", default="best*.pth", help="Checkpoint glob under run_dir.")
     parser.add_argument("--output_dir", default=None, type=Path)
 
@@ -257,6 +264,7 @@ def main():
     parser.add_argument("--groundtruth", default=None)
     parser.add_argument("--labelmap", default=None)
     args = parser.parse_args()
+    args.thresholds = parse_thresholds(args.thresholds)
 
     args.run_dir = args.run_dir.resolve()
     if args.output_dir is None:
