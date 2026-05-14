@@ -174,11 +174,16 @@ def run_checkpoint(checkpoint_path: Path, cli_args, thresholds: List[float], sum
     name_to_vid = get_name_to_vid()
     rows = []
 
-    for images, targets, infos in test_loader:
+    total_batches = len(test_loader)
+    print(f"  Processing {total_batches} batches for {checkpoint_path.name}...")
+    for i, (images, targets, infos) in enumerate(test_loader):
+        if i % max(1, total_batches // 10) == 0:
+            print(f"    Progress: {i}/{total_batches} batches ({100 * i // max(1, total_batches)}%)")
         clean_boxes, outputs, loss_dict = run_eval_batch(model, criterion, images, targets, infos, eval_args)
         loss_dict_reduced = utils.reduce_dict(loss_dict)
         update_metric_logger(metric_logger, loss_dict_reduced, criterion.weight_dict, outputs, eval_args)
         rows.extend(collect_prediction_rows(clean_boxes, infos, outputs, eval_args, name_to_vid=name_to_vid))
+    print(f"    Progress: {total_batches}/{total_batches} batches (100%)")
 
     metric_logger.synchronize_between_processes()
     logger_stats = {k: meter.global_avg for k, meter in metric_logger.meters.items()}
