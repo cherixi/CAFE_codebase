@@ -209,6 +209,12 @@ def build_parser():
     parser.add_argument('--batch', default=16, type=int, help='Batch size')
     parser.add_argument('--test_batch', default=16, type=int, help='Test batch size')
     parser.add_argument('--drop_rate', default=0.1, type=float, help='Dropout rate')
+    parser.add_argument('--eval_num_workers', default=2, type=int,
+                        help='DataLoader workers for evaluation')
+    parser.add_argument('--eval_persistent_workers', action='store_true',
+                        help='keep eval DataLoader workers alive when eval_num_workers > 0')
+    parser.add_argument('--eval_prefetch_factor', default=2, type=int,
+                        help='prefetch factor when eval_num_workers > 0')
 
     # GPU
     parser.add_argument('--device', default="0, 1", type=str, help='GPU device')

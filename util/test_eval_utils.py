@@ -58,16 +58,24 @@ def build_test_loader(args, collate_fn):
     else:
         sampler_test = data.RandomSampler(test_set)
 
+    num_workers = int(getattr(args, "eval_num_workers", 2))
+    loader_kwargs = {
+        "drop_last": False,
+        "collate_fn": collate_fn,
+        "num_workers": num_workers,
+        "pin_memory": False,
+    }
+    if num_workers > 0:
+        loader_kwargs.update(
+            persistent_workers=bool(getattr(args, "eval_persistent_workers", True)),
+            prefetch_factor=int(getattr(args, "eval_prefetch_factor", 2)),
+        )
+
     test_loader = data.DataLoader(
         test_set,
         args.test_batch,
         sampler=sampler_test,
-        drop_last=False,
-        collate_fn=collate_fn,
-        num_workers=2,
-        pin_memory=False,
-        persistent_workers=True,
-        prefetch_factor=2,
+        **loader_kwargs,
     )
     return test_set, test_loader
 

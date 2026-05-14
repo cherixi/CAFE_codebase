@@ -111,6 +111,9 @@ def build_eval_args(cli_args, checkpoint_path: Path):
         "pmr_anchor_source",
         "eval_image_width",
         "eval_image_height",
+        "eval_num_workers",
+        "eval_persistent_workers",
+        "eval_prefetch_factor",
         "groundtruth",
         "labelmap",
     ):
@@ -261,6 +264,9 @@ def main():
     parser.add_argument("--pmr_anchor_source", default=None, choices=["auto", "gdino", "yolo"])
     parser.add_argument("--eval_image_width", default=None, type=int)
     parser.add_argument("--eval_image_height", default=None, type=int)
+    parser.add_argument("--eval_num_workers", default=0, type=int)
+    parser.add_argument("--eval_persistent_workers", default=None, action="store_true")
+    parser.add_argument("--eval_prefetch_factor", default=None, type=int)
     parser.add_argument("--groundtruth", default=None)
     parser.add_argument("--labelmap", default=None)
     args = parser.parse_args()
