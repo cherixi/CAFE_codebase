@@ -170,6 +170,27 @@ parser.add_argument('--pairwise_loss_coef', default=0.25, type=float,
                     help='loss weight for pairwise same-group supervision')
 parser.add_argument('--pairwise_refine_scale', default=0.5, type=float,
                     help='residual scale for pairwise membership refinement')
+attach_group = parser.add_mutually_exclusive_group()
+attach_group.add_argument('--use_attach_head', dest='use_attach_head', action='store_true',
+                          help='enable actor-level attach/outlier head')
+attach_group.add_argument('--no_attach_head', dest='use_attach_head', action='store_false',
+                          help='disable attach/outlier head for old checkpoints')
+parser.set_defaults(use_attach_head=True)
+parser.add_argument('--attach_infer_mode', default='joint', type=str,
+                    choices=['membership_only', 'attach_only', 'joint'],
+                    help='score used by group_threshold at inference')
+attach_gate_group = parser.add_mutually_exclusive_group()
+attach_gate_group.add_argument('--attach_gate_in_pmr', dest='attach_gate_in_pmr', action='store_true',
+                               help='gate PMR propagation by attach probability')
+attach_gate_group.add_argument('--no_attach_gate_in_pmr', dest='attach_gate_in_pmr', action='store_false',
+                               help='do not gate PMR propagation by attach probability')
+parser.set_defaults(attach_gate_in_pmr=False)
+attach_detach_group = parser.add_mutually_exclusive_group()
+attach_detach_group.add_argument('--attach_gate_detach', dest='attach_gate_detach', action='store_true',
+                                 help='detach attach probability before using it as PMR gate')
+attach_detach_group.add_argument('--no_attach_gate_detach', dest='attach_gate_detach', action='store_false',
+                                 help='allow PMR gate gradients to flow into attach head')
+parser.set_defaults(attach_gate_detach=True)
 
 # Loss option
 parser.add_argument('--temperature', default=0.2, type=float, help='consistency loss temperature')
@@ -184,6 +205,7 @@ parser.add_argument('--group_eos_coef', default=1, type=float)
 parser.add_argument('--group_ce_loss_coef', default=1, type=float)
 parser.add_argument('--group_code_loss_coef', default=5, type=float)
 parser.add_argument('--consistency_loss_coef', default=2, type=float)
+parser.add_argument('--attach_loss_coef', default=0.5, type=float)
 
 # Matcher (Group)
 parser.add_argument('--set_cost_group_class', default=1, type=float,
@@ -326,6 +348,13 @@ def main():
             f"use_geom={int(args.pairwise_use_geom_relation)}, use_obj={int(args.pairwise_use_object_relation)}, "
             f"use_small_obj={int(args.pairwise_use_small_object_relation)}, use_anchor={int(args.pairwise_use_anchor_relation)}, "
             f"anchor_source={args.pmr_anchor_source}"
+        )
+    print_log(save_path, f"Attach head: {'ENABLED' if args.use_attach_head else 'DISABLED'}")
+    if args.use_attach_head:
+        print_log(
+            save_path,
+            f"Attach cfg: loss_coef={args.attach_loss_coef}, infer_mode={args.attach_infer_mode}, "
+            f"gate_in_pmr={int(args.attach_gate_in_pmr)}, gate_detach={int(args.attach_gate_detach)}"
         )
 
     # set random seed
@@ -503,6 +532,18 @@ def main():
                     train_log.get('group_olic_disabled', 0.0),
                 )
             )
+        if args.use_attach_head and 'attach_pos_mean' in train_log:
+            print_log(
+                save_path,
+                "ATTACH(train): loss=%.4f pos=%.4f neg=%.4f gap=%.4f acc=%.4f"
+                % (
+                    train_log.get('attach_loss', train_log.get('loss_attach_unscaled', train_log.get('loss_attach', 0.0))),
+                    train_log.get('attach_pos_mean', 0.0),
+                    train_log.get('attach_neg_mean', 0.0),
+                    train_log.get('attach_gap', 0.0),
+                    train_log.get('attach_acc', 0.0),
+                )
+            )
         print('Current learning rate is %f' % scheduler.get_last_lr()[0])
         scheduler.step()
 
@@ -556,6 +597,18 @@ def main():
                         test_log.get('pairwise_refine_delta_mean', 0.0),
                         test_log.get('membership_entropy', 0.0),
                         test_log.get('group_olic_disabled', 0.0),
+                    )
+                )
+            if args.use_attach_head and 'attach_pos_mean' in test_log:
+                print_log(
+                    save_path,
+                    "ATTACH(test): loss=%.4f pos=%.4f neg=%.4f gap=%.4f acc=%.4f"
+                    % (
+                        test_log.get('attach_loss', test_log.get('loss_attach_unscaled', test_log.get('loss_attach', 0.0))),
+                        test_log.get('attach_pos_mean', 0.0),
+                        test_log.get('attach_neg_mean', 0.0),
+                        test_log.get('attach_gap', 0.0),
+                        test_log.get('attach_acc', 0.0),
                     )
                 )
             print_log(save_path, "group mAP at 1.0: %.2f" % result['group_mAP_1.0'])
@@ -745,6 +798,14 @@ def train(train_loader, model, criterion, optimizer, epoch):
                     pair_neg_mean=float(loss_dict_reduced['pair_neg_mean'].item()),
                     pair_gap=float(loss_dict_reduced['pair_gap'].item()),
                 )
+        if args.use_attach_head and 'attach_pos_mean' in loss_dict_reduced:
+            metric_logger.update(
+                attach_loss=float(loss_dict_reduced['loss_attach'].item()),
+                attach_pos_mean=float(loss_dict_reduced['attach_pos_mean'].item()),
+                attach_neg_mean=float(loss_dict_reduced['attach_neg_mean'].item()),
+                attach_gap=float(loss_dict_reduced['attach_gap'].item()),
+                attach_acc=float(loss_dict_reduced['attach_acc'].item()),
+            )
         
         # 显式删除大对象，帮助 GC 回收
         del images, targets, boxes, clean_boxes, outputs, loss, loss_dict
@@ -861,6 +922,14 @@ def validate(test_loader, model, criterion, metrics, epoch):
                     pair_neg_mean=float(loss_dict_reduced['pair_neg_mean'].item()),
                     pair_gap=float(loss_dict_reduced['pair_gap'].item()),
                 )
+        if args.use_attach_head and 'attach_pos_mean' in loss_dict_reduced:
+            metric_logger.update(
+                attach_loss=float(loss_dict_reduced['loss_attach'].item()),
+                attach_pos_mean=float(loss_dict_reduced['attach_pos_mean'].item()),
+                attach_neg_mean=float(loss_dict_reduced['attach_neg_mean'].item()),
+                attach_gap=float(loss_dict_reduced['attach_gap'].item()),
+                attach_acc=float(loss_dict_reduced['attach_acc'].item()),
+            )
 
         # Keep original coordinates for evaluation alignment.
         make_txt(clean_boxes, infos, outputs, name_to_vid, file_path)
@@ -875,6 +944,18 @@ def validate(test_loader, model, criterion, metrics, epoch):
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}, result
 
 
+def _compute_keep_score(membership_max, attach_prob):
+    mode = getattr(args, 'attach_infer_mode', 'membership_only')
+    if not getattr(args, 'use_attach_head', False) or attach_prob is None:
+        mode = 'membership_only'
+
+    if mode == 'attach_only':
+        return attach_prob
+    if mode == 'joint':
+        return torch.sqrt((attach_prob * membership_max).clamp(min=0.0))
+    return membership_max
+
+
 def make_txt(boxes, infos, outputs, name_to_vid, file_path):
     for b in range(boxes.shape[0]):
         for t in range(boxes.shape[1]):
@@ -886,7 +967,12 @@ def make_txt(boxes, infos, outputs, name_to_vid, file_path):
             members = outputs['membership'][b]
 
             pred_membership = torch.argmax(members.transpose(0, 1), dim=1).detach().cpu()
-            keep_membership = members.transpose(0, 1).max(-1).values > args.group_threshold
+            membership_max = members.transpose(0, 1).max(-1).values.detach().cpu()
+            attach_prob = None
+            if 'attach_prob' in outputs:
+                attach_prob = outputs['attach_prob'][b].detach().cpu()
+            keep_score = _compute_keep_score(membership_max, attach_prob)
+            keep_membership = keep_score > args.group_threshold
             pred_group_action = torch.argmax(pred_group_actions, dim=1).detach().cpu()
 
             for box_idx in range(boxes.shape[2]):

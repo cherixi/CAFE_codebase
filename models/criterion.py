@@ -50,6 +50,7 @@ class SetCriterion(nn.Module):
         # option
         self.temperature = args.temperature
         self.use_pairwise_refiner = bool(getattr(args, 'use_pairwise_refiner', True))
+        self.use_attach_head = bool(getattr(args, 'use_attach_head', True))
 
     #######################################################################################################################
     # * Individual Losses
@@ -268,6 +269,72 @@ class SetCriterion(nn.Module):
         }
         return losses
 
+    def loss_attach(self, outputs, targets, group_indices=None, log=True):
+        if 'attach_logits' not in outputs:
+            zero = outputs['membership'].new_tensor(0.0)
+            return {
+                'loss_attach': zero,
+                'attach_pos_mean': zero.detach(),
+                'attach_neg_mean': zero.detach(),
+                'attach_gap': zero.detach(),
+                'attach_acc': zero.detach(),
+            }
+
+        attach_logits = outputs['attach_logits']
+        loss_attach = attach_logits.new_tensor(0.0)
+        pos_sum = attach_logits.new_tensor(0.0)
+        neg_sum = attach_logits.new_tensor(0.0)
+        correct_sum = attach_logits.new_tensor(0.0)
+        valid_sum = attach_logits.new_tensor(0.0)
+        pos_count = 0
+        neg_count = 0
+        valid_batches = 0
+
+        for batch_idx in range(attach_logits.shape[0]):
+            dummy_idx = targets[batch_idx]["dummy_idx"].squeeze().bool()
+            non_dummy_idx = dummy_idx.nonzero(as_tuple=True)[0]
+            if non_dummy_idx.numel() == 0:
+                continue
+
+            membership = targets[batch_idx]["membership"][0][non_dummy_idx]
+            labels = (membership >= 0).float()
+            logits = attach_logits[batch_idx][non_dummy_idx]
+
+            bce = F.binary_cross_entropy_with_logits(logits, labels, reduction='none')
+            pos_mask = labels > 0.5
+            neg_mask = ~pos_mask
+            if pos_mask.any() and neg_mask.any():
+                batch_loss = 0.5 * bce[pos_mask].mean() + 0.5 * bce[neg_mask].mean()
+            else:
+                batch_loss = bce.mean()
+            loss_attach = loss_attach + batch_loss
+            valid_batches += 1
+
+            prob = torch.sigmoid(logits)
+            if pos_mask.any():
+                pos_sum = pos_sum + prob[pos_mask].sum()
+                pos_count += int(pos_mask.sum().item())
+            if neg_mask.any():
+                neg_sum = neg_sum + prob[neg_mask].sum()
+                neg_count += int(neg_mask.sum().item())
+            pred = prob > 0.5
+            correct_sum = correct_sum + (pred == pos_mask).float().sum()
+            valid_sum = valid_sum + labels.new_tensor(float(labels.numel()))
+
+        if valid_batches > 0:
+            loss_attach = loss_attach / valid_batches
+
+        pos_mean = pos_sum / max(pos_count, 1)
+        neg_mean = neg_sum / max(neg_count, 1)
+        attach_acc = correct_sum / valid_sum.clamp(min=1.0)
+        return {
+            'loss_attach': loss_attach,
+            'attach_pos_mean': pos_mean.detach(),
+            'attach_neg_mean': neg_mean.detach(),
+            'attach_gap': (pos_mean - neg_mean).detach(),
+            'attach_acc': attach_acc.detach(),
+        }
+
     def _get_src_permutation_idx(self, indices):
         # permute predictions following indices
         batch_idx = torch.cat([torch.full_like(src, i) for i, (src, _) in enumerate(indices)])
@@ -298,6 +365,7 @@ class SetCriterion(nn.Module):
             'group_code': self.loss_group_code,
             'group_consistency': self.loss_group_consistency,
             'pairwise_group': self.loss_pairwise_group,
+            'attach': self.loss_attach,
         }
         assert loss in loss_map, f'do you really want to compute {loss} loss?'
         return loss_map[loss](outputs, targets, group_indices, **kwargs)

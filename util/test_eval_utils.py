@@ -134,6 +134,26 @@ def update_metric_logger(metric_logger, loss_dict_reduced, weight_dict, outputs,
             shared_table_mean=float(outputs["shared_table_mean"].mean().item()),
             shared_service_mean=float(outputs["shared_service_mean"].mean().item()),
         )
+    if getattr(args, "use_attach_head", False) and "attach_pos_mean" in loss_dict_reduced:
+        metric_logger.update(
+            attach_loss=float(loss_dict_reduced["loss_attach"].item()),
+            attach_pos_mean=float(loss_dict_reduced["attach_pos_mean"].item()),
+            attach_neg_mean=float(loss_dict_reduced["attach_neg_mean"].item()),
+            attach_gap=float(loss_dict_reduced["attach_gap"].item()),
+            attach_acc=float(loss_dict_reduced["attach_acc"].item()),
+        )
+
+
+def compute_keep_score(membership_max, attach_prob, args):
+    mode = getattr(args, "attach_infer_mode", "membership_only")
+    if not getattr(args, "use_attach_head", False) or attach_prob is None:
+        mode = "membership_only"
+
+    if mode == "attach_only":
+        return attach_prob
+    if mode == "joint":
+        return torch.sqrt((attach_prob * membership_max).clamp(min=0.0))
+    return membership_max
 
 
 @torch.no_grad()
@@ -191,6 +211,10 @@ def collect_prediction_rows(clean_boxes, infos, outputs, args, name_to_vid=None)
         members = outputs["membership"][b].detach().cpu()
         pred_membership = torch.argmax(members.transpose(0, 1), dim=1)
         membership_max = members.transpose(0, 1).max(-1).values
+        attach_prob = None
+        if "attach_prob" in outputs:
+            attach_prob = outputs["attach_prob"][b].detach().cpu()
+        keep_score = compute_keep_score(membership_max, attach_prob, args)
         pred_group_action = torch.argmax(pred_group_actions, dim=1)
 
         for t in range(clean_boxes.shape[1]):
@@ -221,6 +245,8 @@ def collect_prediction_rows(clean_boxes, infos, outputs, args, name_to_vid=None)
                         "pred_group_action_idx": pred_group_action_idx,
                         "pred_group_action_prob": pred_group_action_prob,
                         "membership_max": float(membership_max[box_idx].item()),
+                        "attach_prob": float(attach_prob[box_idx].item()) if attach_prob is not None else 1.0,
+                        "keep_score": float(keep_score[box_idx].item()),
                         "is_valid": bool(is_valid),
                         "is_no_group_query": bool(pred_group_action_idx == no_group_class_idx),
                     }
@@ -240,7 +266,8 @@ def write_prediction_rows(rows, file_path: str, threshold: float, args):
 
             pred_group_id = int(row["pred_group_id"])
             pred_group_action_idx = int(row["pred_group_action_idx"])
-            if (not row["is_no_group_query"]) and not (float(row["membership_max"]) > float(threshold)):
+            score = float(row.get("keep_score", row["membership_max"]))
+            if (not row["is_no_group_query"]) and not (score > float(threshold)):
                 pred_group_id = -1
                 pred_group_action_idx = int(args.num_class)
 

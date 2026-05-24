@@ -91,6 +91,9 @@ class GADTR(nn.Module):
         self.pairwise_use_geom_relation = bool(getattr(args, 'pairwise_use_geom_relation', True))
         self.pairwise_use_small_object_relation = bool(getattr(args, 'pairwise_use_small_object_relation', True))
         self.pairwise_use_anchor_relation = bool(getattr(args, 'pairwise_use_anchor_relation', True))
+        self.use_attach_head = bool(getattr(args, 'use_attach_head', True))
+        self.attach_gate_in_pmr = bool(getattr(args, 'attach_gate_in_pmr', False))
+        self.attach_gate_detach = bool(getattr(args, 'attach_gate_detach', True))
         self.pmr_anchor_source = str(getattr(args, 'pmr_anchor_source', 'gdino')).lower()
         if self.pmr_anchor_source not in {'gdino', 'yolo'}:
             self.pmr_anchor_source = 'gdino'
@@ -104,6 +107,8 @@ class GADTR(nn.Module):
                 1,
                 3,
             )
+        if self.use_attach_head:
+            self.attach_head = MLP(self.hidden_dim, self.hidden_dim, 1, 2)
 
         # OLIC (Object-Conditioned Local Interaction Conditioner)
         self.use_olic = bool(getattr(args, 'use_olic', False))
@@ -366,6 +371,7 @@ class GADTR(nn.Module):
         dummy_mask,
         actor_obj_clip=None,
         anchor_relation=None,
+        attach_prob=None,
     ):
         bs, n, _ = actor_clip.shape
         actor_valid = ~dummy_mask.bool()
@@ -419,9 +425,18 @@ class GADTR(nn.Module):
         # Signed affinity lets PMR both support same-group links and suppress
         # mismatched group assignments, instead of only doing non-negative diffusion.
         pair_signed = (2.0 * torch.sigmoid(pair_logits) - 1.0) * pair_valid.float()
+        attach_gate = None
+        if self.attach_gate_in_pmr and attach_prob is not None:
+            attach_gate = attach_prob
+            if self.attach_gate_detach:
+                attach_gate = attach_gate.detach()
+            attach_gate = attach_gate * actor_valid.float()
+            pair_signed = pair_signed * attach_gate.unsqueeze(1) * attach_gate.unsqueeze(2)
 
         base_probs = F.softmax(base_logits, dim=1) * actor_valid.unsqueeze(1).float()
         support = torch.einsum('bgi,bij->bgj', base_probs, pair_signed)
+        if attach_gate is not None:
+            support = support * attach_gate.unsqueeze(1)
         support = support * actor_valid.unsqueeze(1).float()
         refined_logits = base_logits + self.pairwise_refine_scale * support
         membership = F.softmax(refined_logits, dim=1)
@@ -809,6 +824,13 @@ class GADTR(nn.Module):
 
         outputs_actor_emb = self.actor_match_emb(inst_repr)
         outputs_group_emb = self.group_match_emb(group_repr)
+        actor_valid_clip = (~dummy_mask.reshape(bs, t, n)[:, 0, :]).float()
+        attach_logits = None
+        attach_prob = None
+        if self.use_attach_head:
+            attach_logits = self.attach_head(inst_repr).squeeze(-1)
+            attach_logits = attach_logits.masked_fill(actor_valid_clip <= 0.0, 0.0)
+            attach_prob = torch.sigmoid(attach_logits) * actor_valid_clip
         actor_obj_clip = None
         anchor_relation = None
         shared_table_mean = inst_repr.new_tensor(0.0)
@@ -831,6 +853,7 @@ class GADTR(nn.Module):
             dummy_mask=dummy_mask.reshape(bs, t, n)[:, 0, :],
             actor_obj_clip=actor_obj_clip,
             anchor_relation=anchor_relation,
+            attach_prob=attach_prob,
         )
         membership = pairwise_out["membership"]
 
@@ -863,5 +886,8 @@ class GADTR(nn.Module):
             "shared_table_mean": shared_table_mean.detach(),
             "shared_service_mean": shared_service_mean.detach(),
         }
+        if self.use_attach_head:
+            out["attach_logits"] = attach_logits
+            out["attach_prob"] = attach_prob.detach()
 
         return out

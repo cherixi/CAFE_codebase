@@ -109,6 +109,10 @@ def build_eval_args(cli_args, checkpoint_path: Path):
         "num_frame",
         "num_object_boxes",
         "pmr_anchor_source",
+        "use_attach_head",
+        "attach_infer_mode",
+        "attach_gate_in_pmr",
+        "attach_gate_detach",
         "eval_image_width",
         "eval_image_height",
         "eval_num_workers",
@@ -267,6 +271,16 @@ def main():
     parser.add_argument("--num_frame", default=None, type=int)
     parser.add_argument("--num_object_boxes", default=None, type=int)
     parser.add_argument("--pmr_anchor_source", default=None, choices=["auto", "gdino", "yolo"])
+    attach_cli_group = parser.add_mutually_exclusive_group()
+    attach_cli_group.add_argument("--use_attach_head", dest="use_attach_head", action="store_true", default=None)
+    attach_cli_group.add_argument("--no_attach_head", dest="use_attach_head", action="store_false", default=None)
+    parser.add_argument("--attach_infer_mode", default=None, choices=["membership_only", "attach_only", "joint"])
+    attach_gate_cli_group = parser.add_mutually_exclusive_group()
+    attach_gate_cli_group.add_argument("--attach_gate_in_pmr", dest="attach_gate_in_pmr", action="store_true", default=None)
+    attach_gate_cli_group.add_argument("--no_attach_gate_in_pmr", dest="attach_gate_in_pmr", action="store_false", default=None)
+    attach_detach_cli_group = parser.add_mutually_exclusive_group()
+    attach_detach_cli_group.add_argument("--attach_gate_detach", dest="attach_gate_detach", action="store_true", default=None)
+    attach_detach_cli_group.add_argument("--no_attach_gate_detach", dest="attach_gate_detach", action="store_false", default=None)
     parser.add_argument("--eval_image_width", default=None, type=int)
     parser.add_argument("--eval_image_height", default=None, type=int)
     parser.add_argument("--eval_num_workers", default=0, type=int)

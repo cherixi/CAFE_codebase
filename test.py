@@ -168,6 +168,27 @@ def build_parser():
                         help='loss weight for pairwise same-group supervision')
     parser.add_argument('--pairwise_refine_scale', default=0.5, type=float,
                         help='residual scale for pairwise membership refinement')
+    attach_group = parser.add_mutually_exclusive_group()
+    attach_group.add_argument('--use_attach_head', dest='use_attach_head', action='store_true',
+                              help='enable actor-level attach/outlier head')
+    attach_group.add_argument('--no_attach_head', dest='use_attach_head', action='store_false',
+                              help='disable attach/outlier head for old checkpoints')
+    parser.set_defaults(use_attach_head=True)
+    parser.add_argument('--attach_infer_mode', default='joint', type=str,
+                        choices=['membership_only', 'attach_only', 'joint'],
+                        help='score used by group_threshold at inference')
+    attach_gate_group = parser.add_mutually_exclusive_group()
+    attach_gate_group.add_argument('--attach_gate_in_pmr', dest='attach_gate_in_pmr', action='store_true',
+                                   help='gate PMR propagation by attach probability')
+    attach_gate_group.add_argument('--no_attach_gate_in_pmr', dest='attach_gate_in_pmr', action='store_false',
+                                   help='do not gate PMR propagation by attach probability')
+    parser.set_defaults(attach_gate_in_pmr=False)
+    attach_detach_group = parser.add_mutually_exclusive_group()
+    attach_detach_group.add_argument('--attach_gate_detach', dest='attach_gate_detach', action='store_true',
+                                     help='detach attach probability before using it as PMR gate')
+    attach_detach_group.add_argument('--no_attach_gate_detach', dest='attach_gate_detach', action='store_false',
+                                     help='allow PMR gate gradients to flow into attach head')
+    parser.set_defaults(attach_gate_detach=True)
 
     # Box noise ablation
     parser.add_argument('--box_noise_policy', default='none', type=str,
@@ -197,6 +218,7 @@ def build_parser():
     parser.add_argument('--group_ce_loss_coef', default=1, type=float)
     parser.add_argument('--group_code_loss_coef', default=5, type=float)
     parser.add_argument('--consistency_loss_coef', default=2, type=float)
+    parser.add_argument('--attach_loss_coef', default=0.5, type=float)
 
     # Matcher
     parser.add_argument('--set_cost_group_class', default=1, type=float,
