@@ -1,0 +1,254 @@
+----------------------------------------------------------------
+VideoMAE Enhancement: ENABLED
+Version: V2 (Dim: 1408)
+Fusion: adaptive_two_branch
+Feature Path: ./videomae_features_giant
+----------------------------------------------------------------
+----------------------------------------------------------------
+OLIC: ENABLED
+OLIC cfg: M=20, topk=6, dropout=0.1, score_use=prune_relevance, res_scale_init=0.0, gate_init_bias=-4.0, warmup_epochs=5, pruning=OFF(soft-routing-all-valid), attn_tau=2.0, anchor_attn_tau=3.0, dual_channels=1, geom_scale_init=1.0, geom_scale_max=2.0, group_olic_disabled=1
+----------------------------------------------------------------
+PMR: ENABLED
+PMR cfg: refine_scale=0.35, loss_coef=0.15, use_geom=1, use_obj=1, use_small_obj=1, use_anchor=1, anchor_source=gdino
+Attach head: ENABLED
+Attach cfg: loss_coef=0.1, infer_mode=joint, gate_in_pmr=0, gate_detach=1
+--------------------Number of parameters--------------------
+Total parameters: 109,701,664
+Trainable parameters: 37,301,536
+Frozen parameters: 72,400,128
+Frozen ratio: 66.0%
+--------------------Learning Rate Configuration--------------------
+Head learning rate: 1e-05
+Backbone learning rate: 1.0000000000000002e-06 (scale: 0.1)
+Backbone params count: 14,180,352
+Head params count: 23,121,184
+----- Train at epoch #19
+Loss: 0.4298
+Group class error: 5.78
+OLIC(train): warmup=1.000 alpha=0.6686 beta=0.0000 no_group=0.8612 res_a=-0.0232 res_g=0.0000 geom_scale=0.9983 qk_std=34.3813 geom_std=2.5807 geom/qk=0.0772 ent=0.2697 top1=0.8936 valid_obj=10.27
+OLIC-CH(train): small_valid=10.27 anchor_valid=6.61 shared_table=0.0671 shared_service=0.0065
+PMR(train): pos=0.9343 neg=0.0113 gap=0.9229 refine=0.2446 memb_ent=1.0635 group_olic_disabled=1
+ATTACH(train): loss=0.0881 pos=0.9424 neg=0.0722 gap=0.8702 acc=0.9563
+----- Test at epoch #19
+Loss: 2.3407
+Group class error: 39.77
+OLIC(test): warmup=1.000 alpha=0.6939 beta=0.0000 no_group=0.9066 res_a=-0.0240 res_g=0.0000 geom_scale=0.9984 qk_std=29.2945 geom_std=2.1984 geom/qk=0.0756 ent=0.3245 top1=0.8730 valid_obj=10.84
+OLIC-CH(test): small_valid=10.84 anchor_valid=7.39 shared_table=0.0728 shared_service=0.0094
+PMR(test): pos=0.6712 neg=0.0340 gap=0.6372 refine=0.2517 memb_ent=1.4683 group_olic_disabled=1
+ATTACH(test): loss=0.9817 pos=0.6911 neg=0.1455 gap=0.5456 acc=0.7750
+group mAP at 1.0: 19.80
+group mAP at 0.5: 37.19
+outlier mIoU: 67.01
+Updated summary and curves at epoch 19
+Saved best checkpoint for group_mAP_1.0: ./result/[cafe]_GAD_[2026-05-30_10-09-42]/best_group_mAP_1_0.pth
+Saved best checkpoint for group_mAP_0.5: ./result/[cafe]_GAD_[2026-05-30_10-09-42]/best_group_mAP_0_5.pth
+Saved best checkpoint for outlier_mIoU: ./result/[cafe]_GAD_[2026-05-30_10-09-42]/best_outlier_mIoU.pth
+Saved best checkpoint for loss: ./result/[cafe]_GAD_[2026-05-30_10-09-42]/best_loss.pth
+----- Train at epoch #20
+Loss: 0.4074
+Group class error: 5.59
+OLIC(train): warmup=1.000 alpha=0.6537 beta=0.0000 no_group=0.8611 res_a=-0.0254 res_g=0.0000 geom_scale=0.9983 qk_std=36.0712 geom_std=2.5914 geom/qk=0.0735 ent=0.2532 top1=0.9001 valid_obj=10.27
+OLIC-CH(train): small_valid=10.27 anchor_valid=6.62 shared_table=0.0670 shared_service=0.0062
+PMR(train): pos=0.9395 neg=0.0104 gap=0.9290 refine=0.2461 memb_ent=1.0622 group_olic_disabled=1
+ATTACH(train): loss=0.0815 pos=0.9476 neg=0.0677 gap=0.8799 acc=0.9590
+----- Test at epoch #20
+Loss: 1.9074
+Group class error: 30.57
+OLIC(test): warmup=1.000 alpha=0.6790 beta=0.0000 no_group=0.8871 res_a=-0.0263 res_g=0.0000 geom_scale=0.9983 qk_std=32.5277 geom_std=2.3210 geom/qk=0.0718 ent=0.2930 top1=0.8850 valid_obj=10.83
+OLIC-CH(test): small_valid=10.83 anchor_valid=7.36 shared_table=0.0721 shared_service=0.0104
+PMR(test): pos=0.7541 neg=0.0491 gap=0.7050 refine=0.2487 memb_ent=1.2832 group_olic_disabled=1
+ATTACH(test): loss=0.7897 pos=0.7738 neg=0.1977 gap=0.5761 acc=0.7943
+group mAP at 1.0: 20.28
+group mAP at 0.5: 42.21
+outlier mIoU: 68.66
+Updated summary and curves at epoch 20
+Saved best checkpoint for group_mAP_1.0: ./result/[cafe]_GAD_[2026-05-30_10-09-42]/best_group_mAP_1_0.pth
+Saved best checkpoint for group_mAP_0.5: ./result/[cafe]_GAD_[2026-05-30_10-09-42]/best_group_mAP_0_5.pth
+Saved best checkpoint for outlier_mIoU: ./result/[cafe]_GAD_[2026-05-30_10-09-42]/best_outlier_mIoU.pth
+Saved best checkpoint for loss: ./result/[cafe]_GAD_[2026-05-30_10-09-42]/best_loss.pth
+----- Train at epoch #21
+Loss: 0.3999
+Group class error: 5.37
+OLIC(train): warmup=1.000 alpha=0.6683 beta=0.0000 no_group=0.8613 res_a=-0.0273 res_g=0.0000 geom_scale=0.9984 qk_std=38.0574 geom_std=2.5916 geom/qk=0.0698 ent=0.2415 top1=0.9042 valid_obj=10.27
+OLIC-CH(train): small_valid=10.27 anchor_valid=6.62 shared_table=0.0678 shared_service=0.0066
+PMR(train): pos=0.9391 neg=0.0097 gap=0.9294 refine=0.2468 memb_ent=1.0613 group_olic_disabled=1
+ATTACH(train): loss=0.0788 pos=0.9492 neg=0.0646 gap=0.8846 acc=0.9601
+----- Test at epoch #21
+Loss: 2.1068
+Group class error: 31.55
+OLIC(test): warmup=1.000 alpha=0.6928 beta=0.0000 no_group=0.8927 res_a=-0.0284 res_g=0.0000 geom_scale=0.9985 qk_std=33.0367 geom_std=2.2567 geom/qk=0.0690 ent=0.2954 top1=0.8841 valid_obj=10.82
+OLIC-CH(test): small_valid=10.82 anchor_valid=7.38 shared_table=0.0719 shared_service=0.0085
+PMR(test): pos=0.7062 neg=0.0398 gap=0.6664 refine=0.2528 memb_ent=1.3402 group_olic_disabled=1
+ATTACH(test): loss=0.9011 pos=0.7445 neg=0.1867 gap=0.5578 acc=0.7843
+group mAP at 1.0: 19.76
+group mAP at 0.5: 41.72
+outlier mIoU: 68.65
+Updated summary and curves at epoch 21
+----- Train at epoch #22
+Loss: 0.3861
+Group class error: 5.04
+OLIC(train): warmup=1.000 alpha=0.6924 beta=0.0000 no_group=0.8610 res_a=-0.0301 res_g=0.0000 geom_scale=0.9988 qk_std=40.8178 geom_std=2.6817 geom/qk=0.0678 ent=0.2256 top1=0.9104 valid_obj=10.27
+OLIC-CH(train): small_valid=10.27 anchor_valid=6.61 shared_table=0.0698 shared_service=0.0071
+PMR(train): pos=0.9429 neg=0.0095 gap=0.9334 refine=0.2474 memb_ent=1.0608 group_olic_disabled=1
+ATTACH(train): loss=0.0733 pos=0.9517 neg=0.0604 gap=0.8913 acc=0.9634
+----- Test at epoch #22
+Loss: 1.9236
+Group class error: 30.53
+OLIC(test): warmup=1.000 alpha=0.6797 beta=0.0000 no_group=0.8923 res_a=-0.0308 res_g=0.0000 geom_scale=0.9989 qk_std=36.6863 geom_std=2.3472 geom/qk=0.0646 ent=0.2889 top1=0.8862 valid_obj=10.83
+OLIC-CH(test): small_valid=10.83 anchor_valid=7.40 shared_table=0.0726 shared_service=0.0148
+PMR(test): pos=0.7365 neg=0.0435 gap=0.6930 refine=0.2473 memb_ent=1.3201 group_olic_disabled=1
+ATTACH(test): loss=0.7323 pos=0.7782 neg=0.1922 gap=0.5859 acc=0.7985
+group mAP at 1.0: 20.23
+group mAP at 0.5: 42.81
+outlier mIoU: 70.19
+Updated summary and curves at epoch 22
+Saved best checkpoint for group_mAP_0.5: ./result/[cafe]_GAD_[2026-05-30_10-09-42]/best_group_mAP_0_5.pth
+Saved best checkpoint for outlier_mIoU: ./result/[cafe]_GAD_[2026-05-30_10-09-42]/best_outlier_mIoU.pth
+----- Train at epoch #23
+Loss: 0.3723
+Group class error: 4.87
+OLIC(train): warmup=1.000 alpha=0.6593 beta=0.0000 no_group=0.8613 res_a=-0.0319 res_g=0.0000 geom_scale=0.9990 qk_std=42.1216 geom_std=2.6436 geom/qk=0.0645 ent=0.2216 top1=0.9118 valid_obj=10.27
+OLIC-CH(train): small_valid=10.27 anchor_valid=6.61 shared_table=0.0696 shared_service=0.0065
+PMR(train): pos=0.9473 neg=0.0090 gap=0.9384 refine=0.2477 memb_ent=1.0603 group_olic_disabled=1
+ATTACH(train): loss=0.0694 pos=0.9549 neg=0.0589 gap=0.8960 acc=0.9649
+----- Test at epoch #23
+Loss: 2.2643
+Group class error: 34.01
+OLIC(test): warmup=1.000 alpha=0.6605 beta=0.0000 no_group=0.8933 res_a=-0.0333 res_g=0.0000 geom_scale=0.9991 qk_std=38.2897 geom_std=2.3376 geom/qk=0.0622 ent=0.2807 top1=0.8897 valid_obj=10.83
+OLIC-CH(test): small_valid=10.83 anchor_valid=7.38 shared_table=0.0746 shared_service=0.0111
+PMR(test): pos=0.6804 neg=0.0393 gap=0.6411 refine=0.2507 memb_ent=1.3688 group_olic_disabled=1
+ATTACH(test): loss=0.9832 pos=0.7259 neg=0.1901 gap=0.5358 acc=0.7696
+group mAP at 1.0: 16.26
+group mAP at 0.5: 37.90
+outlier mIoU: 66.72
+Updated summary and curves at epoch 23
+----- Train at epoch #24
+Loss: 0.3561
+Group class error: 4.34
+OLIC(train): warmup=1.000 alpha=0.6562 beta=0.0000 no_group=0.8613 res_a=-0.0344 res_g=0.0000 geom_scale=0.9993 qk_std=43.4441 geom_std=2.7197 geom/qk=0.0646 ent=0.2109 top1=0.9160 valid_obj=10.27
+OLIC-CH(train): small_valid=10.27 anchor_valid=6.61 shared_table=0.0716 shared_service=0.0059
+PMR(train): pos=0.9507 neg=0.0079 gap=0.9428 refine=0.2487 memb_ent=1.0593 group_olic_disabled=1
+ATTACH(train): loss=0.0630 pos=0.9579 neg=0.0508 gap=0.9072 acc=0.9694
+----- Test at epoch #24
+Loss: 2.1960
+Group class error: 30.17
+OLIC(test): warmup=1.000 alpha=0.6741 beta=0.0000 no_group=0.8899 res_a=-0.0357 res_g=0.0000 geom_scale=0.9995 qk_std=36.7205 geom_std=2.4421 geom/qk=0.0674 ent=0.2630 top1=0.8960 valid_obj=10.84
+OLIC-CH(test): small_valid=10.84 anchor_valid=7.37 shared_table=0.0700 shared_service=0.0096
+PMR(test): pos=0.7423 neg=0.0452 gap=0.6971 refine=0.2506 memb_ent=1.2977 group_olic_disabled=1
+ATTACH(test): loss=0.9348 pos=0.7718 neg=0.2058 gap=0.5660 acc=0.7862
+group mAP at 1.0: 21.60
+group mAP at 0.5: 40.68
+outlier mIoU: 69.17
+Updated summary and curves at epoch 24
+Saved best checkpoint for group_mAP_1.0: ./result/[cafe]_GAD_[2026-05-30_10-09-42]/best_group_mAP_1_0.pth
+----- Train at epoch #25
+Loss: 0.3426
+Group class error: 3.91
+OLIC(train): warmup=1.000 alpha=0.6695 beta=0.0000 no_group=0.8608 res_a=-0.0370 res_g=0.0000 geom_scale=0.9995 qk_std=41.9143 geom_std=2.8013 geom/qk=0.0687 ent=0.2134 top1=0.9151 valid_obj=10.27
+OLIC-CH(train): small_valid=10.27 anchor_valid=6.61 shared_table=0.0694 shared_service=0.0066
+PMR(train): pos=0.9551 neg=0.0075 gap=0.9476 refine=0.2488 memb_ent=1.0587 group_olic_disabled=1
+ATTACH(train): loss=0.0586 pos=0.9616 neg=0.0489 gap=0.9127 acc=0.9722
+----- Test at epoch #25
+Loss: 2.2845
+Group class error: 32.14
+OLIC(test): warmup=1.000 alpha=0.6717 beta=0.0000 no_group=0.8933 res_a=-0.0379 res_g=0.0000 geom_scale=0.9995 qk_std=37.7456 geom_std=2.3683 geom/qk=0.0639 ent=0.2649 top1=0.8955 valid_obj=10.83
+OLIC-CH(test): small_valid=10.83 anchor_valid=7.38 shared_table=0.0719 shared_service=0.0101
+PMR(test): pos=0.7306 neg=0.0442 gap=0.6864 refine=0.2530 memb_ent=1.3263 group_olic_disabled=1
+ATTACH(test): loss=0.9471 pos=0.7564 neg=0.1826 gap=0.5738 acc=0.7895
+group mAP at 1.0: 21.26
+group mAP at 0.5: 41.80
+outlier mIoU: 69.56
+Updated summary and curves at epoch 25
+----- Train at epoch #26
+Loss: 0.3254
+Group class error: 3.54
+OLIC(train): warmup=1.000 alpha=0.6842 beta=0.0000 no_group=0.8606 res_a=-0.0391 res_g=0.0000 geom_scale=0.9996 qk_std=41.2858 geom_std=2.7343 geom/qk=0.0683 ent=0.2145 top1=0.9148 valid_obj=10.27
+OLIC-CH(train): small_valid=10.27 anchor_valid=6.62 shared_table=0.0693 shared_service=0.0067
+PMR(train): pos=0.9602 neg=0.0069 gap=0.9532 refine=0.2500 memb_ent=1.0575 group_olic_disabled=1
+ATTACH(train): loss=0.0528 pos=0.9638 neg=0.0422 gap=0.9217 acc=0.9749
+----- Test at epoch #26
+Loss: 2.3000
+Group class error: 30.15
+OLIC(test): warmup=1.000 alpha=0.6978 beta=0.0000 no_group=0.8913 res_a=-0.0401 res_g=0.0000 geom_scale=0.9998 qk_std=32.7313 geom_std=2.4305 geom/qk=0.0751 ent=0.2793 top1=0.8903 valid_obj=10.83
+OLIC-CH(test): small_valid=10.83 anchor_valid=7.37 shared_table=0.0699 shared_service=0.0093
+PMR(test): pos=0.7236 neg=0.0396 gap=0.6840 refine=0.2529 memb_ent=1.3300 group_olic_disabled=1
+ATTACH(test): loss=0.9660 pos=0.7556 neg=0.1806 gap=0.5750 acc=0.7892
+group mAP at 1.0: 20.48
+group mAP at 0.5: 41.78
+outlier mIoU: 68.91
+Updated summary and curves at epoch 26
+----- Train at epoch #27
+Loss: 0.3177
+Group class error: 3.28
+OLIC(train): warmup=1.000 alpha=0.6842 beta=0.0000 no_group=0.8609 res_a=-0.0411 res_g=0.0000 geom_scale=0.9998 qk_std=42.7889 geom_std=2.7176 geom/qk=0.0662 ent=0.2126 top1=0.9154 valid_obj=10.27
+OLIC-CH(train): small_valid=10.27 anchor_valid=6.62 shared_table=0.0705 shared_service=0.0069
+PMR(train): pos=0.9619 neg=0.0070 gap=0.9550 refine=0.2498 memb_ent=1.0555 group_olic_disabled=1
+ATTACH(train): loss=0.0510 pos=0.9666 neg=0.0415 gap=0.9251 acc=0.9758
+----- Test at epoch #27
+Loss: 2.2385
+Group class error: 34.55
+OLIC(test): warmup=1.000 alpha=0.6862 beta=0.0000 no_group=0.9004 res_a=-0.0421 res_g=0.0000 geom_scale=0.9999 qk_std=39.9686 geom_std=2.3500 geom/qk=0.0597 ent=0.2675 top1=0.8947 valid_obj=10.83
+OLIC-CH(test): small_valid=10.83 anchor_valid=7.38 shared_table=0.0728 shared_service=0.0115
+PMR(test): pos=0.7173 neg=0.0378 gap=0.6796 refine=0.2517 memb_ent=1.3825 group_olic_disabled=1
+ATTACH(test): loss=0.9376 pos=0.7427 neg=0.1666 gap=0.5761 acc=0.7911
+group mAP at 1.0: 20.99
+group mAP at 0.5: 40.90
+outlier mIoU: 69.28
+Updated summary and curves at epoch 27
+----- Train at epoch #28
+Loss: 0.3086
+Group class error: 3.16
+OLIC(train): warmup=1.000 alpha=0.6795 beta=0.0000 no_group=0.8609 res_a=-0.0425 res_g=0.0000 geom_scale=1.0001 qk_std=46.3040 geom_std=2.7509 geom/qk=0.0612 ent=0.1970 top1=0.9214 valid_obj=10.27
+OLIC-CH(train): small_valid=10.27 anchor_valid=6.62 shared_table=0.0711 shared_service=0.0063
+PMR(train): pos=0.9629 neg=0.0062 gap=0.9566 refine=0.2503 memb_ent=1.0542 group_olic_disabled=1
+ATTACH(train): loss=0.0475 pos=0.9682 neg=0.0381 gap=0.9300 acc=0.9775
+----- Test at epoch #28
+Loss: 2.3459
+Group class error: 31.78
+OLIC(test): warmup=1.000 alpha=0.6927 beta=0.0000 no_group=0.8944 res_a=-0.0430 res_g=0.0000 geom_scale=1.0002 qk_std=38.8020 geom_std=2.4560 geom/qk=0.0641 ent=0.2591 top1=0.8977 valid_obj=10.82
+OLIC-CH(test): small_valid=10.82 anchor_valid=7.38 shared_table=0.0716 shared_service=0.0087
+PMR(test): pos=0.7244 neg=0.0363 gap=0.6880 refine=0.2544 memb_ent=1.3491 group_olic_disabled=1
+ATTACH(test): loss=0.9287 pos=0.7516 neg=0.1740 gap=0.5775 acc=0.7895
+group mAP at 1.0: 21.44
+group mAP at 0.5: 41.33
+outlier mIoU: 69.77
+Updated summary and curves at epoch 28
+----- Train at epoch #29
+Loss: 0.2909
+Group class error: 2.62
+OLIC(train): warmup=1.000 alpha=0.6777 beta=0.0000 no_group=0.8608 res_a=-0.0434 res_g=0.0000 geom_scale=1.0002 qk_std=45.1102 geom_std=2.8010 geom/qk=0.0641 ent=0.2021 top1=0.9194 valid_obj=10.27
+OLIC-CH(train): small_valid=10.27 anchor_valid=6.62 shared_table=0.0715 shared_service=0.0064
+PMR(train): pos=0.9670 neg=0.0053 gap=0.9617 refine=0.2505 memb_ent=1.0552 group_olic_disabled=1
+ATTACH(train): loss=0.0409 pos=0.9723 neg=0.0325 gap=0.9398 acc=0.9814
+----- Test at epoch #29
+Loss: 2.3454
+Group class error: 31.30
+OLIC(test): warmup=1.000 alpha=0.6805 beta=0.0000 no_group=0.8940 res_a=-0.0440 res_g=0.0000 geom_scale=1.0004 qk_std=40.8810 geom_std=2.4734 geom/qk=0.0620 ent=0.2435 top1=0.9036 valid_obj=10.83
+OLIC-CH(test): small_valid=10.83 anchor_valid=7.38 shared_table=0.0732 shared_service=0.0080
+PMR(test): pos=0.7489 neg=0.0414 gap=0.7075 refine=0.2545 memb_ent=1.3101 group_olic_disabled=1
+ATTACH(test): loss=0.9390 pos=0.7783 neg=0.1842 gap=0.5941 acc=0.7999
+group mAP at 1.0: 22.74
+group mAP at 0.5: 43.69
+outlier mIoU: 69.64
+Updated summary and curves at epoch 29
+Saved best checkpoint for group_mAP_1.0: ./result/[cafe]_GAD_[2026-05-30_10-09-42]/best_group_mAP_1_0.pth
+Saved best checkpoint for group_mAP_0.5: ./result/[cafe]_GAD_[2026-05-30_10-09-42]/best_group_mAP_0_5.pth
+----- Train at epoch #30
+Loss: 0.2871
+Group class error: 2.27
+OLIC(train): warmup=1.000 alpha=0.6749 beta=0.0000 no_group=0.8604 res_a=-0.0444 res_g=0.0000 geom_scale=1.0004 qk_std=44.8986 geom_std=2.8093 geom/qk=0.0645 ent=0.2002 top1=0.9201 valid_obj=10.27
+OLIC-CH(train): small_valid=10.27 anchor_valid=6.61 shared_table=0.0711 shared_service=0.0063
+PMR(train): pos=0.9691 neg=0.0053 gap=0.9638 refine=0.2508 memb_ent=1.0530 group_olic_disabled=1
+ATTACH(train): loss=0.0396 pos=0.9739 neg=0.0311 gap=0.9428 acc=0.9819
+----- Test at epoch #30
+Loss: 2.6192
+Group class error: 33.46
+OLIC(test): warmup=1.000 alpha=0.6765 beta=0.0000 no_group=0.8968 res_a=-0.0447 res_g=0.0000 geom_scale=1.0006 qk_std=39.7224 geom_std=2.4414 geom/qk=0.0616 ent=0.2403 top1=0.9050 valid_obj=10.84
+OLIC-CH(test): small_valid=10.84 anchor_valid=7.39 shared_table=0.0734 shared_service=0.0068
+PMR(test): pos=0.7031 neg=0.0380 gap=0.6651 refine=0.2548 memb_ent=1.3681 group_olic_disabled=1
+ATTACH(test): loss=1.0576 pos=0.7426 neg=0.1771 gap=0.5655 acc=0.7832
+group mAP at 1.0: 20.58
+group mAP at 0.5: 40.79
+outlier mIoU: 68.88
+Updated summary and curves at epoch 30
+Saved final checkpoint: ./result/[cafe]_GAD_[2026-05-30_10-09-42]/last.pth
