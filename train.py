@@ -175,8 +175,8 @@ attach_group.add_argument('--use_attach_head', dest='use_attach_head', action='s
                           help='enable actor-level attach/outlier head')
 attach_group.add_argument('--no_attach_head', dest='use_attach_head', action='store_false',
                           help='disable attach/outlier head for old checkpoints')
-parser.set_defaults(use_attach_head=True)
-parser.add_argument('--attach_infer_mode', default='joint', type=str,
+parser.set_defaults(use_attach_head=False)
+parser.add_argument('--attach_infer_mode', default='membership_only', type=str,
                     choices=['membership_only', 'attach_only', 'joint'],
                     help='score used by group_threshold at inference')
 attach_gate_group = parser.add_mutually_exclusive_group()
@@ -205,7 +205,13 @@ parser.add_argument('--group_eos_coef', default=1, type=float)
 parser.add_argument('--group_ce_loss_coef', default=1, type=float)
 parser.add_argument('--group_code_loss_coef', default=5, type=float)
 parser.add_argument('--consistency_loss_coef', default=2, type=float)
-parser.add_argument('--attach_loss_coef', default=0.5, type=float)
+parser.add_argument('--attach_loss_coef', default=0.0, type=float)
+parser.add_argument('--membership_margin_loss_coef', default=0.0, type=float,
+                    help='loss weight for group-conditioned membership/outlier margin supervision')
+parser.add_argument('--membership_member_margin', default=0.5, type=float,
+                    help='required logit margin between the matched group and competing groups for true members')
+parser.add_argument('--membership_outlier_margin', default=0.0, type=float,
+                    help='maximum preferred group logit margin for outlier actors')
 
 # Matcher (Group)
 parser.add_argument('--set_cost_group_class', default=1, type=float,
@@ -355,6 +361,16 @@ def main():
             save_path,
             f"Attach cfg: loss_coef={args.attach_loss_coef}, infer_mode={args.attach_infer_mode}, "
             f"gate_in_pmr={int(args.attach_gate_in_pmr)}, gate_detach={int(args.attach_gate_detach)}"
+        )
+    print_log(
+        save_path,
+        f"Membership margin: {'ENABLED' if args.membership_margin_loss_coef > 0.0 else 'DISABLED'}"
+    )
+    if args.membership_margin_loss_coef > 0.0:
+        print_log(
+            save_path,
+            f"Membership margin cfg: loss_coef={args.membership_margin_loss_coef}, "
+            f"member_margin={args.membership_member_margin}, outlier_margin={args.membership_outlier_margin}"
         )
 
     # set random seed
@@ -544,6 +560,18 @@ def main():
                     train_log.get('attach_acc', 0.0),
                 )
             )
+        if args.membership_margin_loss_coef > 0.0 and 'membership_margin_loss' in train_log:
+            print_log(
+                save_path,
+                "MARGIN(train): loss=%.4f member=%.4f outlier=%.4f member_active=%.4f outlier_active=%.4f"
+                % (
+                    train_log.get('membership_margin_loss', 0.0),
+                    train_log.get('member_margin_loss', 0.0),
+                    train_log.get('outlier_margin_loss', 0.0),
+                    train_log.get('member_margin_active', 0.0),
+                    train_log.get('outlier_margin_active', 0.0),
+                )
+            )
         print('Current learning rate is %f' % scheduler.get_last_lr()[0])
         scheduler.step()
 
@@ -609,6 +637,18 @@ def main():
                         test_log.get('attach_neg_mean', 0.0),
                         test_log.get('attach_gap', 0.0),
                         test_log.get('attach_acc', 0.0),
+                    )
+                )
+            if args.membership_margin_loss_coef > 0.0 and 'membership_margin_loss' in test_log:
+                print_log(
+                    save_path,
+                    "MARGIN(test): loss=%.4f member=%.4f outlier=%.4f member_active=%.4f outlier_active=%.4f"
+                    % (
+                        test_log.get('membership_margin_loss', 0.0),
+                        test_log.get('member_margin_loss', 0.0),
+                        test_log.get('outlier_margin_loss', 0.0),
+                        test_log.get('member_margin_active', 0.0),
+                        test_log.get('outlier_margin_active', 0.0),
                     )
                 )
             print_log(save_path, "group mAP at 1.0: %.2f" % result['group_mAP_1.0'])
@@ -806,6 +846,14 @@ def train(train_loader, model, criterion, optimizer, epoch):
                 attach_gap=float(loss_dict_reduced['attach_gap'].item()),
                 attach_acc=float(loss_dict_reduced['attach_acc'].item()),
             )
+        if args.membership_margin_loss_coef > 0.0 and 'loss_membership_margin' in loss_dict_reduced:
+            metric_logger.update(
+                membership_margin_loss=float(loss_dict_reduced['loss_membership_margin'].item()),
+                member_margin_loss=float(loss_dict_reduced['member_margin_loss'].item()),
+                outlier_margin_loss=float(loss_dict_reduced['outlier_margin_loss'].item()),
+                member_margin_active=float(loss_dict_reduced['member_margin_active'].item()),
+                outlier_margin_active=float(loss_dict_reduced['outlier_margin_active'].item()),
+            )
         
         # 显式删除大对象，帮助 GC 回收
         del images, targets, boxes, clean_boxes, outputs, loss, loss_dict
@@ -929,6 +977,14 @@ def validate(test_loader, model, criterion, metrics, epoch):
                 attach_neg_mean=float(loss_dict_reduced['attach_neg_mean'].item()),
                 attach_gap=float(loss_dict_reduced['attach_gap'].item()),
                 attach_acc=float(loss_dict_reduced['attach_acc'].item()),
+            )
+        if args.membership_margin_loss_coef > 0.0 and 'loss_membership_margin' in loss_dict_reduced:
+            metric_logger.update(
+                membership_margin_loss=float(loss_dict_reduced['loss_membership_margin'].item()),
+                member_margin_loss=float(loss_dict_reduced['member_margin_loss'].item()),
+                outlier_margin_loss=float(loss_dict_reduced['outlier_margin_loss'].item()),
+                member_margin_active=float(loss_dict_reduced['member_margin_active'].item()),
+                outlier_margin_active=float(loss_dict_reduced['outlier_margin_active'].item()),
             )
 
         # Keep original coordinates for evaluation alignment.

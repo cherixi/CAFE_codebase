@@ -10,8 +10,10 @@ def build_model(args):
     group_losses = ['group_labels', 'group_cardinality', 'group_code', 'group_consistency']
     if getattr(args, 'use_pairwise_refiner', True):
         group_losses.append('pairwise_group')
-    if getattr(args, 'use_attach_head', True):
+    if getattr(args, 'use_attach_head', False):
         group_losses.append('attach')
+    if float(getattr(args, 'membership_margin_loss_coef', 0.0)) > 0.0:
+        group_losses.append('membership_margin')
 
     # Set loss coefficients
     weight_dict = {}
@@ -21,8 +23,10 @@ def build_model(args):
     weight_dict['loss_consistency'] = args.consistency_loss_coef
     if getattr(args, 'use_pairwise_refiner', True):
         weight_dict['loss_pairwise_group'] = args.pairwise_loss_coef
-    if getattr(args, 'use_attach_head', True):
+    if getattr(args, 'use_attach_head', False):
         weight_dict['loss_attach'] = args.attach_loss_coef
+    if float(getattr(args, 'membership_margin_loss_coef', 0.0)) > 0.0:
+        weight_dict['loss_membership_margin'] = args.membership_margin_loss_coef
 
     # Group matching
     group_matcher = build_group_matcher(args)

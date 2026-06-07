@@ -91,7 +91,7 @@ class GADTR(nn.Module):
         self.pairwise_use_geom_relation = bool(getattr(args, 'pairwise_use_geom_relation', True))
         self.pairwise_use_small_object_relation = bool(getattr(args, 'pairwise_use_small_object_relation', True))
         self.pairwise_use_anchor_relation = bool(getattr(args, 'pairwise_use_anchor_relation', True))
-        self.use_attach_head = bool(getattr(args, 'use_attach_head', True))
+        self.use_attach_head = bool(getattr(args, 'use_attach_head', False))
         self.attach_gate_in_pmr = bool(getattr(args, 'attach_gate_in_pmr', False))
         self.attach_gate_detach = bool(getattr(args, 'attach_gate_detach', True))
         self.pmr_anchor_source = str(getattr(args, 'pmr_anchor_source', 'gdino')).lower()

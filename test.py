@@ -173,8 +173,8 @@ def build_parser():
                               help='enable actor-level attach/outlier head')
     attach_group.add_argument('--no_attach_head', dest='use_attach_head', action='store_false',
                               help='disable attach/outlier head for old checkpoints')
-    parser.set_defaults(use_attach_head=True)
-    parser.add_argument('--attach_infer_mode', default='joint', type=str,
+    parser.set_defaults(use_attach_head=False)
+    parser.add_argument('--attach_infer_mode', default='membership_only', type=str,
                         choices=['membership_only', 'attach_only', 'joint'],
                         help='score used by group_threshold at inference')
     attach_gate_group = parser.add_mutually_exclusive_group()
@@ -218,7 +218,13 @@ def build_parser():
     parser.add_argument('--group_ce_loss_coef', default=1, type=float)
     parser.add_argument('--group_code_loss_coef', default=5, type=float)
     parser.add_argument('--consistency_loss_coef', default=2, type=float)
-    parser.add_argument('--attach_loss_coef', default=0.5, type=float)
+    parser.add_argument('--attach_loss_coef', default=0.0, type=float)
+    parser.add_argument('--membership_margin_loss_coef', default=0.0, type=float,
+                        help='loss weight for group-conditioned membership/outlier margin supervision')
+    parser.add_argument('--membership_member_margin', default=0.5, type=float,
+                        help='required logit margin between the matched group and competing groups for true members')
+    parser.add_argument('--membership_outlier_margin', default=0.0, type=float,
+                        help='maximum preferred group logit margin for outlier actors')
 
     # Matcher
     parser.add_argument('--set_cost_group_class', default=1, type=float,

@@ -113,6 +113,9 @@ def build_eval_args(cli_args, checkpoint_path: Path):
         "attach_infer_mode",
         "attach_gate_in_pmr",
         "attach_gate_detach",
+        "membership_margin_loss_coef",
+        "membership_member_margin",
+        "membership_outlier_margin",
         "eval_image_width",
         "eval_image_height",
         "eval_num_workers",
@@ -281,6 +284,9 @@ def main():
     attach_detach_cli_group = parser.add_mutually_exclusive_group()
     attach_detach_cli_group.add_argument("--attach_gate_detach", dest="attach_gate_detach", action="store_true", default=None)
     attach_detach_cli_group.add_argument("--no_attach_gate_detach", dest="attach_gate_detach", action="store_false", default=None)
+    parser.add_argument("--membership_margin_loss_coef", default=None, type=float)
+    parser.add_argument("--membership_member_margin", default=None, type=float)
+    parser.add_argument("--membership_outlier_margin", default=None, type=float)
     parser.add_argument("--eval_image_width", default=None, type=int)
     parser.add_argument("--eval_image_height", default=None, type=int)
     parser.add_argument("--eval_num_workers", default=0, type=int)

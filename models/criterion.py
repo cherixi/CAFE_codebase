@@ -50,7 +50,9 @@ class SetCriterion(nn.Module):
         # option
         self.temperature = args.temperature
         self.use_pairwise_refiner = bool(getattr(args, 'use_pairwise_refiner', True))
-        self.use_attach_head = bool(getattr(args, 'use_attach_head', True))
+        self.use_attach_head = bool(getattr(args, 'use_attach_head', False))
+        self.membership_member_margin = float(getattr(args, 'membership_member_margin', 0.5))
+        self.membership_outlier_margin = float(getattr(args, 'membership_outlier_margin', 0.0))
 
     #######################################################################################################################
     # * Individual Losses
@@ -335,6 +337,75 @@ class SetCriterion(nn.Module):
             'attach_acc': attach_acc.detach(),
         }
 
+    def loss_membership_margin(self, outputs, targets, group_indices, log=True):
+        membership_logits = outputs.get('membership_logits_refined', None)
+        if membership_logits is None:
+            membership_logits = outputs.get('membership_logits_base', None)
+        if membership_logits is None:
+            membership_logits = outputs['membership']
+
+        idx = self._get_src_permutation_idx(group_indices)
+        flatten_targets = [u for t in targets for u in t["members"]]
+        target_members_o = torch.cat([t[J] for t, (_, J) in zip(flatten_targets, group_indices)])
+        target_members = torch.full(membership_logits.shape, 0.0, dtype=torch.float, device=membership_logits.device)
+        target_members[idx] = target_members_o.float()
+
+        member_loss_sum = membership_logits.new_tensor(0.0)
+        outlier_loss_sum = membership_logits.new_tensor(0.0)
+        member_violation_sum = membership_logits.new_tensor(0.0)
+        outlier_violation_sum = membership_logits.new_tensor(0.0)
+        member_count = membership_logits.new_tensor(0.0)
+        outlier_count = membership_logits.new_tensor(0.0)
+
+        for batch_idx in range(membership_logits.shape[0]):
+            dummy_idx = targets[batch_idx]["dummy_idx"].squeeze().bool()
+            non_dummy_idx = dummy_idx.nonzero(as_tuple=True)[0]
+            if non_dummy_idx.numel() == 0:
+                continue
+
+            logits_b = membership_logits[batch_idx][:, non_dummy_idx]  # [G, N_valid]
+            target_b = target_members[batch_idx][:, non_dummy_idx] > 0.5
+            membership = targets[batch_idx]["membership"][0][non_dummy_idx]
+
+            member_actor_mask = (membership >= 0) & target_b.any(dim=0)
+            if member_actor_mask.any():
+                member_logits = logits_b[:, member_actor_mask].transpose(0, 1)  # [N_member, G]
+                pos_mask = target_b[:, member_actor_mask].transpose(0, 1)
+                pos_idx = pos_mask.float().argmax(dim=1)
+                actor_idx = torch.arange(member_logits.shape[0], device=member_logits.device)
+                correct_logits = member_logits[actor_idx, pos_idx]
+                wrong_logits = member_logits.masked_fill(pos_mask, -1e4).max(dim=1).values
+                member_margin_raw = self.membership_member_margin - correct_logits + wrong_logits
+                member_loss_sum = member_loss_sum + F.softplus(member_margin_raw).sum()
+                member_violation_sum = member_violation_sum + (member_margin_raw > 0.0).float().sum()
+                member_count = member_count + member_logits.new_tensor(float(member_logits.shape[0]))
+
+            outlier_actor_mask = membership < 0
+            if outlier_actor_mask.any():
+                outlier_logits = logits_b[:, outlier_actor_mask]
+                outlier_max_logits = outlier_logits.max(dim=0).values
+                outlier_margin_raw = outlier_max_logits - self.membership_outlier_margin
+                outlier_loss_sum = outlier_loss_sum + F.softplus(outlier_margin_raw).sum()
+                outlier_violation_sum = outlier_violation_sum + (outlier_margin_raw > 0.0).float().sum()
+                outlier_count = outlier_count + outlier_logits.new_tensor(float(outlier_logits.shape[1]))
+
+        member_loss = member_loss_sum / member_count.clamp(min=1.0)
+        outlier_loss = outlier_loss_sum / outlier_count.clamp(min=1.0)
+        member_part = (member_count > 0).float()
+        outlier_part = (outlier_count > 0).float()
+        active_parts = (member_part + outlier_part).clamp(min=1.0)
+        loss_membership_margin = (member_loss * member_part + outlier_loss * outlier_part) / active_parts
+
+        member_active = member_violation_sum / member_count.clamp(min=1.0)
+        outlier_active = outlier_violation_sum / outlier_count.clamp(min=1.0)
+        return {
+            'loss_membership_margin': loss_membership_margin,
+            'member_margin_loss': member_loss.detach(),
+            'outlier_margin_loss': outlier_loss.detach(),
+            'member_margin_active': member_active.detach(),
+            'outlier_margin_active': outlier_active.detach(),
+        }
+
     def _get_src_permutation_idx(self, indices):
         # permute predictions following indices
         batch_idx = torch.cat([torch.full_like(src, i) for i, (src, _) in enumerate(indices)])
@@ -366,6 +437,7 @@ class SetCriterion(nn.Module):
             'group_consistency': self.loss_group_consistency,
             'pairwise_group': self.loss_pairwise_group,
             'attach': self.loss_attach,
+            'membership_margin': self.loss_membership_margin,
         }
         assert loss in loss_map, f'do you really want to compute {loss} loss?'
         return loss_map[loss](outputs, targets, group_indices, **kwargs)

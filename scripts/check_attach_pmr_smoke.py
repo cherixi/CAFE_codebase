@@ -181,6 +181,14 @@ def main():
         require("attach_prob absent when disabled", "attach_prob" not in outputs)
         require("loss_attach absent when disabled", "loss_attach" not in loss_dict)
 
+    if args.membership_margin_loss_coef > 0.0:
+        require("loss_membership_margin in loss_dict", "loss_membership_margin" in loss_dict)
+        require("loss_membership_margin finite", torch.isfinite(loss_dict["loss_membership_margin"]).item())
+        for key in ("loss_membership_margin", "member_margin_loss", "outlier_margin_loss", "member_margin_active", "outlier_margin_active"):
+            summary[key] = float(loss_dict[key].detach().item())
+    else:
+        require("loss_membership_margin absent when disabled", "loss_membership_margin" not in loss_dict)
+
     text = json.dumps(summary, indent=2, ensure_ascii=False)
     print(text)
     if args.smoke_output_json:

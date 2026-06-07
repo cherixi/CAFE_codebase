@@ -142,6 +142,14 @@ def update_metric_logger(metric_logger, loss_dict_reduced, weight_dict, outputs,
             attach_gap=float(loss_dict_reduced["attach_gap"].item()),
             attach_acc=float(loss_dict_reduced["attach_acc"].item()),
         )
+    if getattr(args, "membership_margin_loss_coef", 0.0) > 0.0 and "loss_membership_margin" in loss_dict_reduced:
+        metric_logger.update(
+            membership_margin_loss=float(loss_dict_reduced["loss_membership_margin"].item()),
+            member_margin_loss=float(loss_dict_reduced["member_margin_loss"].item()),
+            outlier_margin_loss=float(loss_dict_reduced["outlier_margin_loss"].item()),
+            member_margin_active=float(loss_dict_reduced["member_margin_active"].item()),
+            outlier_margin_active=float(loss_dict_reduced["outlier_margin_active"].item()),
+        )
 
 
 def compute_keep_score(membership_max, attach_prob, args):
