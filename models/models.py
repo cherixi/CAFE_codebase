@@ -100,13 +100,27 @@ class GADTR(nn.Module):
         self.pairwise_geom_dim = 6
         self.pairwise_small_obj_dim = 2
         self.pairwise_anchor_dim = 2
+        self.use_query_conditioned_pmr = bool(getattr(args, 'use_query_conditioned_pmr', False))
+        self.pairwise_input_dim = (
+            2 * self.hidden_dim
+            + self.pairwise_geom_dim
+            + self.pairwise_small_obj_dim
+            + self.pairwise_anchor_dim
+        )
         if self.use_pairwise_refiner:
             self.pairwise_affinity_mlp = MLP(
-                2 * self.hidden_dim + self.pairwise_geom_dim + self.pairwise_small_obj_dim + self.pairwise_anchor_dim,
+                self.pairwise_input_dim,
                 self.hidden_dim,
                 1,
                 3,
             )
+            if self.use_query_conditioned_pmr:
+                self.query_pairwise_affinity_mlp = MLP(
+                    self.hidden_dim + self.pairwise_input_dim,
+                    self.hidden_dim,
+                    1,
+                    3,
+                )
         if self.use_attach_head:
             self.attach_head = MLP(self.hidden_dim, self.hidden_dim, 1, 2)
 
@@ -135,6 +149,9 @@ class GADTR(nn.Module):
         self.dining_family_id = 3
         self.service_family_id = 4
         self.table_family_id = 5
+        self.use_type_aware_object_token = bool(getattr(args, 'use_type_aware_object_token', False))
+        self.object_family_vocab_size = max(1, int(getattr(args, 'object_family_vocab_size', 8)))
+        self.object_token_vocab_size = max(1, int(getattr(args, 'object_token_vocab_size', 32)))
 
         if self.use_olic:
             # Object tokenization uses the same RoIAlign config as actor path.
@@ -144,6 +161,18 @@ class GADTR(nn.Module):
             )
             self.obj_drop_emb = nn.Dropout(p=args.drop_rate)
             self.obj_box_pos_emb = MLP(4, self.hidden_dim, self.hidden_dim, 3)
+            if self.use_type_aware_object_token:
+                self.object_family_emb = nn.Embedding(
+                    self.object_family_vocab_size,
+                    self.hidden_dim,
+                    padding_idx=0,
+                )
+                self.object_token_emb = nn.Embedding(
+                    self.object_token_vocab_size,
+                    self.hidden_dim,
+                    padding_idx=0,
+                )
+                self.object_score_emb = MLP(1, self.hidden_dim, self.hidden_dim, 2)
 
             # Legacy relevance head kept for checkpoint compatibility.
             # Pruning is disabled in the current stable OLIC path.
@@ -392,6 +421,7 @@ class GADTR(nn.Module):
                 "pairwise_affinity_signed": zero_pair,
                 "pairwise_valid_mask": pair_valid,
                 "pairwise_refine_delta_mean": actor_clip.new_tensor(0.0),
+                "qpmr_support_abs_mean": actor_clip.new_tensor(0.0),
                 "membership_entropy": entropy,
             }
 
@@ -413,31 +443,55 @@ class GADTR(nn.Module):
         else:
             pair_anchor = actor_clip.new_zeros(bs, n, n, self.pairwise_anchor_dim)
 
-        pair_feat = torch.cat((pair_actor_i, pair_actor_j, pair_geom, pair_obj, pair_anchor), dim=-1)
-        pair_logits = self.pairwise_affinity_mlp(pair_feat).squeeze(-1)
-        pair_logits = 0.5 * (pair_logits + pair_logits.transpose(1, 2))
-
-        pair_valid = actor_valid.unsqueeze(1) & actor_valid.unsqueeze(2)
+        pair_feat_base = torch.cat((pair_actor_i, pair_actor_j, pair_geom, pair_obj, pair_anchor), dim=-1)
+        pair_valid_base = actor_valid.unsqueeze(1) & actor_valid.unsqueeze(2)
         eye = torch.eye(n, dtype=torch.bool, device=actor_clip.device).unsqueeze(0)
-        pair_valid = pair_valid & (~eye)
-        pair_logits = pair_logits.masked_fill(~pair_valid, 0.0)
-        pair_probs = torch.sigmoid(pair_logits) * pair_valid.float()
-        # Signed affinity lets PMR both support same-group links and suppress
-        # mismatched group assignments, instead of only doing non-negative diffusion.
-        pair_signed = (2.0 * torch.sigmoid(pair_logits) - 1.0) * pair_valid.float()
+        pair_valid_base = pair_valid_base & (~eye)
+
         attach_gate = None
         if self.attach_gate_in_pmr and attach_prob is not None:
             attach_gate = attach_prob
             if self.attach_gate_detach:
                 attach_gate = attach_gate.detach()
             attach_gate = attach_gate * actor_valid.float()
-            pair_signed = pair_signed * attach_gate.unsqueeze(1) * attach_gate.unsqueeze(2)
 
         base_probs = F.softmax(base_logits, dim=1) * actor_valid.unsqueeze(1).float()
-        support = torch.einsum('bgi,bij->bgj', base_probs, pair_signed)
+        if self.use_query_conditioned_pmr:
+            k_group = outputs_group_emb.shape[1]
+            group_feat = outputs_group_emb.unsqueeze(2).unsqueeze(3).expand(
+                bs, k_group, n, n, self.hidden_dim
+            )
+            pair_feat = pair_feat_base.unsqueeze(1).expand(
+                bs, k_group, n, n, self.pairwise_input_dim
+            )
+            pair_feat = torch.cat((group_feat, pair_feat), dim=-1)
+            pair_logits = self.query_pairwise_affinity_mlp(pair_feat).squeeze(-1)
+            pair_logits = 0.5 * (pair_logits + pair_logits.transpose(2, 3))
+            pair_valid = pair_valid_base.unsqueeze(1).expand(bs, k_group, n, n)
+            pair_logits = pair_logits.masked_fill(~pair_valid, 0.0)
+            pair_probs = torch.sigmoid(pair_logits) * pair_valid.float()
+            pair_signed = (2.0 * torch.sigmoid(pair_logits) - 1.0) * pair_valid.float()
+            if attach_gate is not None:
+                pair_signed = pair_signed * attach_gate[:, None, :, None] * attach_gate[:, None, None, :]
+            support = torch.einsum('bgj,bgji->bgi', base_probs, pair_signed)
+        else:
+            pair_logits = self.pairwise_affinity_mlp(pair_feat_base).squeeze(-1)
+            pair_logits = 0.5 * (pair_logits + pair_logits.transpose(1, 2))
+            pair_valid = pair_valid_base
+            pair_logits = pair_logits.masked_fill(~pair_valid, 0.0)
+            pair_probs = torch.sigmoid(pair_logits) * pair_valid.float()
+            # Signed affinity lets PMR both support same-group links and suppress
+            # mismatched group assignments, instead of only doing non-negative diffusion.
+            pair_signed = (2.0 * torch.sigmoid(pair_logits) - 1.0) * pair_valid.float()
+            if attach_gate is not None:
+                pair_signed = pair_signed * attach_gate.unsqueeze(1) * attach_gate.unsqueeze(2)
+            support = torch.einsum('bgi,bij->bgj', base_probs, pair_signed)
+
         if attach_gate is not None:
             support = support * attach_gate.unsqueeze(1)
-        support = support * actor_valid.unsqueeze(1).float()
+        support_mask = actor_valid.unsqueeze(1).expand_as(support).float()
+        support = support * support_mask
+        support_abs_mean = support.abs().sum() / support_mask.sum().clamp(min=1.0)
         refined_logits = base_logits + self.pairwise_refine_scale * support
         membership = F.softmax(refined_logits, dim=1)
 
@@ -457,6 +511,7 @@ class GADTR(nn.Module):
             "pairwise_affinity_signed": pair_signed,
             "pairwise_valid_mask": pair_valid,
             "pairwise_refine_delta_mean": refine_delta_mean,
+            "qpmr_support_abs_mean": support_abs_mean,
             "membership_entropy": membership_entropy,
         }
 
@@ -471,6 +526,7 @@ class GADTR(nn.Module):
         object_valid_mask,
         object_scores,
         object_family_id,
+        object_token_id,
         oh,
         ow,
     ):
@@ -504,6 +560,10 @@ class GADTR(nn.Module):
         else:
             obj_family = torch.zeros((bt, m), dtype=torch.long, device=obj_xyxy.device)
             has_family_ids = False
+        if object_token_id is not None:
+            obj_token = object_token_id.reshape(bt, m).long()
+        else:
+            obj_token = torch.zeros((bt, m), dtype=torch.long, device=obj_xyxy.device)
 
         # Object RoIAlign on the same feature map scale/path as actor RoIAlign.
         obj_pixel = obj_xyxy.clone()
@@ -522,6 +582,16 @@ class GADTR(nn.Module):
         obj_features = self.obj_drop_emb(obj_features)
         obj_features = obj_features.reshape(bt, m, self.hidden_dim)
         obj_features = obj_features + self.obj_box_pos_emb(obj_cxcywh.reshape(bt, m, 4))
+        if self.use_type_aware_object_token:
+            family_ids = obj_family.clamp(min=0, max=self.object_family_vocab_size - 1)
+            token_ids = obj_token.clamp(min=0, max=self.object_token_vocab_size - 1)
+            score_values = object_scores.reshape(bt, m, 1).float().clamp(min=0.0, max=1.0)
+            type_features = (
+                self.object_family_emb(family_ids)
+                + self.object_token_emb(token_ids)
+                + self.object_score_emb(score_values)
+            )
+            obj_features = obj_features + type_features * obj_valid.unsqueeze(-1).float()
 
         actor_valid = actor_valid_mask_bt_n.bool()
 
@@ -753,6 +823,7 @@ class GADTR(nn.Module):
                 object_valid_mask=object_valid_mask,
                 object_scores=object_scores,
                 object_family_id=object_family_id,
+                object_token_id=object_token_id,
                 oh=oh,
                 ow=ow,
             )
@@ -869,7 +940,10 @@ class GADTR(nn.Module):
             "pairwise_affinity_signed": pairwise_out["pairwise_affinity_signed"],
             "pairwise_valid_mask": pairwise_out["pairwise_valid_mask"],
             "pairwise_refine_delta_mean": pairwise_out["pairwise_refine_delta_mean"].detach(),
+            "qpmr_support_abs_mean": pairwise_out["qpmr_support_abs_mean"].detach(),
             "membership_entropy": pairwise_out["membership_entropy"].detach(),
+            "query_conditioned_pmr": inst_repr.new_tensor(1.0 if self.use_query_conditioned_pmr else 0.0),
+            "type_aware_object_token": inst_repr.new_tensor(1.0 if self.use_type_aware_object_token else 0.0),
             "group_olic_disabled": inst_repr.new_tensor(1.0 if self.disable_group_olic else 0.0),
             "olic_alpha_mean": olic_alpha_mean.detach(),
             "olic_beta_mean": olic_beta_mean.detach(),

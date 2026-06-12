@@ -151,13 +151,18 @@ def main():
         "membership_logits_base": tensor_summary(outputs["membership_logits_base"]),
         "membership_logits_refined": tensor_summary(outputs["membership_logits_refined"]),
         "pairwise_refine_delta_mean": float(outputs.get("pairwise_refine_delta_mean", torch.tensor(0.0)).mean().item()),
+        "qpmr_support_abs_mean": float(outputs.get("qpmr_support_abs_mean", torch.tensor(0.0)).mean().item()),
         "membership_entropy": float(outputs.get("membership_entropy", torch.tensor(0.0)).mean().item()),
+        "query_conditioned_pmr": float(outputs.get("query_conditioned_pmr", torch.tensor(0.0)).mean().item()),
+        "type_aware_object_token": float(outputs.get("type_aware_object_token", torch.tensor(0.0)).mean().item()),
         "loss_keys": sorted(loss_dict.keys()),
     }
 
     if args.use_pairwise_refiner:
         require("pairwise_affinity_logits exists", "pairwise_affinity_logits" in outputs)
         require("pairwise_affinity_logits finite", torch.isfinite(outputs["pairwise_affinity_logits"]).all().item())
+        expected_pair_shape = [bs, k, n, n] if args.use_query_conditioned_pmr else [bs, n, n]
+        require("pairwise_affinity_logits shape", list(outputs["pairwise_affinity_logits"].shape) == expected_pair_shape)
         summary["pairwise_affinity_logits"] = tensor_summary(outputs["pairwise_affinity_logits"])
         for key in ("pair_pos_mean", "pair_neg_mean", "pair_gap"):
             require(f"{key} in loss_dict", key in loss_dict)

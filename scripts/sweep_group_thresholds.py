@@ -108,7 +108,11 @@ def build_eval_args(cli_args, checkpoint_path: Path):
         "test_batch",
         "num_frame",
         "num_object_boxes",
+        "use_type_aware_object_token",
+        "object_family_vocab_size",
+        "object_token_vocab_size",
         "pmr_anchor_source",
+        "use_query_conditioned_pmr",
         "use_attach_head",
         "attach_infer_mode",
         "attach_gate_in_pmr",
@@ -273,7 +277,15 @@ def main():
     parser.add_argument("--test_batch", default=None, type=int)
     parser.add_argument("--num_frame", default=None, type=int)
     parser.add_argument("--num_object_boxes", default=None, type=int)
+    type_aware_cli_group = parser.add_mutually_exclusive_group()
+    type_aware_cli_group.add_argument("--use_type_aware_object_token", dest="use_type_aware_object_token", action="store_true", default=None)
+    type_aware_cli_group.add_argument("--no_type_aware_object_token", dest="use_type_aware_object_token", action="store_false", default=None)
+    parser.add_argument("--object_family_vocab_size", default=None, type=int)
+    parser.add_argument("--object_token_vocab_size", default=None, type=int)
     parser.add_argument("--pmr_anchor_source", default=None, choices=["auto", "gdino", "yolo"])
+    qpmr_cli_group = parser.add_mutually_exclusive_group()
+    qpmr_cli_group.add_argument("--use_query_conditioned_pmr", dest="use_query_conditioned_pmr", action="store_true", default=None)
+    qpmr_cli_group.add_argument("--no_query_conditioned_pmr", dest="use_query_conditioned_pmr", action="store_false", default=None)
     attach_cli_group = parser.add_mutually_exclusive_group()
     attach_cli_group.add_argument("--use_attach_head", dest="use_attach_head", action="store_true", default=None)
     attach_cli_group.add_argument("--no_attach_head", dest="use_attach_head", action="store_false", default=None)

@@ -103,6 +103,16 @@ parser.set_defaults(disable_group_olic=True)
 parser.add_argument('--object_tracks_pkl', default='', type=str,
                     help='path to object track pkl; default: <data_path>/cafe/object_tracks_gdino_swinb_localmix_membership.pkl')
 parser.add_argument('--num_object_boxes', default=20, type=int, help='fixed number of object boxes per frame')
+type_aware_obj_group = parser.add_mutually_exclusive_group()
+type_aware_obj_group.add_argument('--use_type_aware_object_token', dest='use_type_aware_object_token', action='store_true',
+                                  help='add family/token/score embeddings to object tokens')
+type_aware_obj_group.add_argument('--no_type_aware_object_token', dest='use_type_aware_object_token', action='store_false',
+                                  help='use visual and box object tokens only')
+parser.set_defaults(use_type_aware_object_token=False)
+parser.add_argument('--object_family_vocab_size', default=8, type=int,
+                    help='object family embedding vocab size; ids outside range are clamped')
+parser.add_argument('--object_token_vocab_size', default=32, type=int,
+                    help='object token embedding vocab size; ids outside range are clamped')
 parser.add_argument('--olic_topk_obj', default=6, type=int,
                     help='(deprecated) top-k objects per actor for relevance pruning; pruning is disabled in current stable path')
 parser.add_argument('--olic_dropout', default=-1.0, type=float,
@@ -170,6 +180,12 @@ parser.add_argument('--pairwise_loss_coef', default=0.25, type=float,
                     help='loss weight for pairwise same-group supervision')
 parser.add_argument('--pairwise_refine_scale', default=0.5, type=float,
                     help='residual scale for pairwise membership refinement')
+qpmr_group = parser.add_mutually_exclusive_group()
+qpmr_group.add_argument('--use_query_conditioned_pmr', dest='use_query_conditioned_pmr', action='store_true',
+                        help='condition PMR actor-pair affinities on each group query')
+qpmr_group.add_argument('--no_query_conditioned_pmr', dest='use_query_conditioned_pmr', action='store_false',
+                        help='use group-agnostic PMR actor-pair affinities')
+parser.set_defaults(use_query_conditioned_pmr=False)
 attach_group = parser.add_mutually_exclusive_group()
 attach_group.add_argument('--use_attach_head', dest='use_attach_head', action='store_true',
                           help='enable actor-level attach/outlier head')
@@ -334,6 +350,7 @@ def main():
         print_log(
             save_path,
             f"OLIC cfg: M={args.num_object_boxes}, topk={args.olic_topk_obj}, "
+            f"type_aware_obj={int(args.use_type_aware_object_token)}, "
             f"dropout={args.olic_dropout}, score_use={args.olic_score_use}, "
             f"res_scale_init={args.olic_res_scale_init}, gate_init_bias={args.olic_gate_init_bias}, "
             f"warmup_epochs={args.olic_warmup_epochs}, pruning=OFF(soft-routing-all-valid), "
@@ -351,6 +368,7 @@ def main():
         print_log(
             save_path,
             f"PMR cfg: refine_scale={args.pairwise_refine_scale}, loss_coef={args.pairwise_loss_coef}, "
+            f"query_conditioned={int(args.use_query_conditioned_pmr)}, "
             f"use_geom={int(args.pairwise_use_geom_relation)}, use_obj={int(args.pairwise_use_object_relation)}, "
             f"use_small_obj={int(args.pairwise_use_small_object_relation)}, use_anchor={int(args.pairwise_use_anchor_relation)}, "
             f"anchor_source={args.pmr_anchor_source}"
@@ -538,13 +556,16 @@ def main():
         if args.use_pairwise_refiner and 'pair_pos_mean' in train_log:
             print_log(
                 save_path,
-                "PMR(train): pos=%.4f neg=%.4f gap=%.4f refine=%.4f memb_ent=%.4f group_olic_disabled=%.0f"
+                "PMR(train): pos=%.4f neg=%.4f gap=%.4f refine=%.4f support=%.4f memb_ent=%.4f qpmr=%.0f type_obj=%.0f group_olic_disabled=%.0f"
                 % (
                     train_log.get('pair_pos_mean', 0.0),
                     train_log.get('pair_neg_mean', 0.0),
                     train_log.get('pair_gap', 0.0),
                     train_log.get('pairwise_refine_delta_mean', 0.0),
+                    train_log.get('qpmr_support_abs_mean', 0.0),
                     train_log.get('membership_entropy', 0.0),
+                    train_log.get('query_conditioned_pmr', 0.0),
+                    train_log.get('type_aware_object_token', 0.0),
                     train_log.get('group_olic_disabled', 0.0),
                 )
             )
@@ -617,13 +638,16 @@ def main():
             if args.use_pairwise_refiner and 'pair_pos_mean' in test_log:
                 print_log(
                     save_path,
-                    "PMR(test): pos=%.4f neg=%.4f gap=%.4f refine=%.4f memb_ent=%.4f group_olic_disabled=%.0f"
+                    "PMR(test): pos=%.4f neg=%.4f gap=%.4f refine=%.4f support=%.4f memb_ent=%.4f qpmr=%.0f type_obj=%.0f group_olic_disabled=%.0f"
                     % (
                         test_log.get('pair_pos_mean', 0.0),
                         test_log.get('pair_neg_mean', 0.0),
                         test_log.get('pair_gap', 0.0),
                         test_log.get('pairwise_refine_delta_mean', 0.0),
+                        test_log.get('qpmr_support_abs_mean', 0.0),
                         test_log.get('membership_entropy', 0.0),
+                        test_log.get('query_conditioned_pmr', 0.0),
+                        test_log.get('type_aware_object_token', 0.0),
                         test_log.get('group_olic_disabled', 0.0),
                     )
                 )
@@ -829,7 +853,10 @@ def train(train_loader, model, criterion, optimizer, epoch):
         if args.use_pairwise_refiner and 'pairwise_refine_delta_mean' in outputs:
             metric_logger.update(
                 pairwise_refine_delta_mean=float(outputs['pairwise_refine_delta_mean'].mean().item()),
+                qpmr_support_abs_mean=float(outputs['qpmr_support_abs_mean'].mean().item()),
                 membership_entropy=float(outputs['membership_entropy'].mean().item()),
+                query_conditioned_pmr=float(outputs['query_conditioned_pmr'].mean().item()),
+                type_aware_object_token=float(outputs['type_aware_object_token'].mean().item()),
                 group_olic_disabled=float(outputs['group_olic_disabled'].mean().item()),
             )
             if 'pair_pos_mean' in loss_dict_reduced:
@@ -961,7 +988,10 @@ def validate(test_loader, model, criterion, metrics, epoch):
         if args.use_pairwise_refiner and 'pairwise_refine_delta_mean' in outputs:
             metric_logger.update(
                 pairwise_refine_delta_mean=float(outputs['pairwise_refine_delta_mean'].mean().item()),
+                qpmr_support_abs_mean=float(outputs['qpmr_support_abs_mean'].mean().item()),
                 membership_entropy=float(outputs['membership_entropy'].mean().item()),
+                query_conditioned_pmr=float(outputs['query_conditioned_pmr'].mean().item()),
+                type_aware_object_token=float(outputs['type_aware_object_token'].mean().item()),
                 group_olic_disabled=float(outputs['group_olic_disabled'].mean().item()),
             )
             if 'pair_pos_mean' in loss_dict_reduced:

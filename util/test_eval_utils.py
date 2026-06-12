@@ -118,7 +118,10 @@ def update_metric_logger(metric_logger, loss_dict_reduced, weight_dict, outputs,
     if args.use_pairwise_refiner and "pairwise_refine_delta_mean" in outputs:
         metric_logger.update(
             pairwise_refine_delta_mean=float(outputs["pairwise_refine_delta_mean"].mean().item()),
+            qpmr_support_abs_mean=float(outputs["qpmr_support_abs_mean"].mean().item()),
             membership_entropy=float(outputs["membership_entropy"].mean().item()),
+            query_conditioned_pmr=float(outputs["query_conditioned_pmr"].mean().item()),
+            type_aware_object_token=float(outputs["type_aware_object_token"].mean().item()),
             group_olic_disabled=float(outputs["group_olic_disabled"].mean().item()),
         )
         if "pair_pos_mean" in loss_dict_reduced:

@@ -101,6 +101,16 @@ def build_parser():
     parser.add_argument('--object_tracks_pkl', default='', type=str,
                         help='path to object track pkl; default: <data_path>/cafe/object_tracks_gdino_swinb_localmix_membership.pkl')
     parser.add_argument('--num_object_boxes', default=20, type=int, help='fixed number of object boxes per frame')
+    type_aware_obj_group = parser.add_mutually_exclusive_group()
+    type_aware_obj_group.add_argument('--use_type_aware_object_token', dest='use_type_aware_object_token', action='store_true',
+                                      help='add family/token/score embeddings to object tokens')
+    type_aware_obj_group.add_argument('--no_type_aware_object_token', dest='use_type_aware_object_token', action='store_false',
+                                      help='use visual and box object tokens only')
+    parser.set_defaults(use_type_aware_object_token=False)
+    parser.add_argument('--object_family_vocab_size', default=8, type=int,
+                        help='object family embedding vocab size; ids outside range are clamped')
+    parser.add_argument('--object_token_vocab_size', default=32, type=int,
+                        help='object token embedding vocab size; ids outside range are clamped')
     parser.add_argument('--olic_topk_obj', default=6, type=int,
                         help='(deprecated) top-k objects per actor for relevance pruning; pruning is disabled in current stable path')
     parser.add_argument('--olic_dropout', default=-1.0, type=float,
@@ -168,6 +178,12 @@ def build_parser():
                         help='loss weight for pairwise same-group supervision')
     parser.add_argument('--pairwise_refine_scale', default=0.5, type=float,
                         help='residual scale for pairwise membership refinement')
+    qpmr_group = parser.add_mutually_exclusive_group()
+    qpmr_group.add_argument('--use_query_conditioned_pmr', dest='use_query_conditioned_pmr', action='store_true',
+                            help='condition PMR actor-pair affinities on each group query')
+    qpmr_group.add_argument('--no_query_conditioned_pmr', dest='use_query_conditioned_pmr', action='store_false',
+                            help='use group-agnostic PMR actor-pair affinities')
+    parser.set_defaults(use_query_conditioned_pmr=False)
     attach_group = parser.add_mutually_exclusive_group()
     attach_group.add_argument('--use_attach_head', dest='use_attach_head', action='store_true',
                               help='enable actor-level attach/outlier head')

@@ -216,6 +216,10 @@ class SetCriterion(nn.Module):
     def loss_pairwise_group(self, outputs, targets, group_indices=None, log=True):
         pair_logits = outputs['pairwise_affinity_logits']
         pair_valid = outputs['pairwise_valid_mask']
+        if pair_logits.dim() == 4:
+            pair_logits = pair_logits.mean(dim=1)
+        if pair_valid.dim() == 4:
+            pair_valid = pair_valid.any(dim=1)
 
         loss_pair = pair_logits.new_tensor(0.0)
         pos_mean_acc = pair_logits.new_tensor(0.0)
