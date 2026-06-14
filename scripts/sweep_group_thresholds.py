@@ -113,6 +113,7 @@ def build_eval_args(cli_args, checkpoint_path: Path):
         "object_token_vocab_size",
         "pmr_anchor_source",
         "use_query_conditioned_pmr",
+        "query_pairwise_loss_coef",
         "use_attach_head",
         "attach_infer_mode",
         "attach_gate_in_pmr",
@@ -286,6 +287,7 @@ def main():
     qpmr_cli_group = parser.add_mutually_exclusive_group()
     qpmr_cli_group.add_argument("--use_query_conditioned_pmr", dest="use_query_conditioned_pmr", action="store_true", default=None)
     qpmr_cli_group.add_argument("--no_query_conditioned_pmr", dest="use_query_conditioned_pmr", action="store_false", default=None)
+    parser.add_argument("--query_pairwise_loss_coef", default=None, type=float)
     attach_cli_group = parser.add_mutually_exclusive_group()
     attach_cli_group.add_argument("--use_attach_head", dest="use_attach_head", action="store_true", default=None)
     attach_cli_group.add_argument("--no_attach_head", dest="use_attach_head", action="store_false", default=None)

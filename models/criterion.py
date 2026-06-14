@@ -275,6 +275,93 @@ class SetCriterion(nn.Module):
         }
         return losses
 
+    def loss_query_pairwise_group(self, outputs, targets, group_indices, log=True):
+        pair_logits = outputs['pairwise_affinity_logits']
+        pair_valid = outputs['pairwise_valid_mask']
+        if pair_logits.dim() != 4:
+            zero = pair_logits.new_tensor(0.0)
+            return {
+                'loss_query_pairwise_group': zero,
+                'qpair_pos_mean': zero.detach(),
+                'qpair_neg_mean': zero.detach(),
+                'qpair_gap': zero.detach(),
+                'qpair_matched_query_count': zero.detach(),
+                'qpair_active_pair_count': zero.detach(),
+            }
+
+        if pair_valid.dim() == 3:
+            pair_valid = pair_valid.unsqueeze(1).expand_as(pair_logits)
+
+        loss_sum = pair_logits.new_tensor(0.0)
+        pos_sum = pair_logits.new_tensor(0.0)
+        neg_sum = pair_logits.new_tensor(0.0)
+        pos_count = pair_logits.new_tensor(0.0)
+        neg_count = pair_logits.new_tensor(0.0)
+        matched_query_count = pair_logits.new_tensor(0.0)
+        active_pair_count = pair_logits.new_tensor(0.0)
+
+        for batch_idx in range(pair_logits.shape[0]):
+            dummy_idx = targets[batch_idx]["dummy_idx"].squeeze().bool()
+            non_dummy_idx = dummy_idx.nonzero(as_tuple=True)[0]
+            if non_dummy_idx.numel() <= 1:
+                continue
+
+            src_idx, tgt_idx = group_indices[batch_idx]
+            if src_idx.numel() == 0:
+                continue
+
+            members_all = targets[batch_idx]["members"][0].to(pair_logits.device)
+            logits_all = pair_logits[batch_idx]
+            valid_all = pair_valid[batch_idx]
+
+            for pred_query, target_group in zip(src_idx.tolist(), tgt_idx.tolist()):
+                if target_group >= members_all.shape[0] or pred_query >= logits_all.shape[0]:
+                    continue
+
+                member_mask = members_all[target_group][non_dummy_idx] > 0.5
+                if not member_mask.any():
+                    continue
+
+                logits = logits_all[pred_query][non_dummy_idx][:, non_dummy_idx]
+                valid = valid_all[pred_query][non_dummy_idx][:, non_dummy_idx]
+
+                member_i = member_mask.unsqueeze(1)
+                member_j = member_mask.unsqueeze(0)
+                positive = member_i & member_j & valid
+                negative = (member_i ^ member_j) & valid
+                valid_mask = positive | negative
+                if valid_mask.sum() == 0:
+                    continue
+
+                target_pair = positive.float()
+                loss_sum = loss_sum + F.binary_cross_entropy_with_logits(
+                    logits[valid_mask],
+                    target_pair[valid_mask],
+                )
+
+                probs = torch.sigmoid(logits)
+                if positive.any():
+                    pos_sum = pos_sum + probs[positive].sum()
+                    pos_count = pos_count + positive.float().sum()
+                if negative.any():
+                    neg_sum = neg_sum + probs[negative].sum()
+                    neg_count = neg_count + negative.float().sum()
+                matched_query_count = matched_query_count + 1.0
+                active_pair_count = active_pair_count + valid_mask.float().sum()
+
+        loss_query_pair = loss_sum / matched_query_count.clamp(min=1.0)
+        pos_mean = pos_sum / pos_count.clamp(min=1.0)
+        neg_mean = neg_sum / neg_count.clamp(min=1.0)
+        losses = {
+            'loss_query_pairwise_group': loss_query_pair,
+            'qpair_pos_mean': pos_mean.detach(),
+            'qpair_neg_mean': neg_mean.detach(),
+            'qpair_gap': (pos_mean - neg_mean).detach(),
+            'qpair_matched_query_count': matched_query_count.detach(),
+            'qpair_active_pair_count': active_pair_count.detach(),
+        }
+        return losses
+
     def loss_attach(self, outputs, targets, group_indices=None, log=True):
         if 'attach_logits' not in outputs:
             zero = outputs['membership'].new_tensor(0.0)
@@ -440,6 +527,7 @@ class SetCriterion(nn.Module):
             'group_code': self.loss_group_code,
             'group_consistency': self.loss_group_consistency,
             'pairwise_group': self.loss_pairwise_group,
+            'query_pairwise_group': self.loss_query_pairwise_group,
             'attach': self.loss_attach,
             'membership_margin': self.loss_membership_margin,
         }

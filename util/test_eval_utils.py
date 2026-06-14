@@ -130,6 +130,15 @@ def update_metric_logger(metric_logger, loss_dict_reduced, weight_dict, outputs,
                 pair_neg_mean=float(loss_dict_reduced["pair_neg_mean"].item()),
                 pair_gap=float(loss_dict_reduced["pair_gap"].item()),
             )
+        if "qpair_pos_mean" in loss_dict_reduced:
+            metric_logger.update(
+                query_pairwise_loss=float(loss_dict_reduced["loss_query_pairwise_group"].item()),
+                qpair_pos_mean=float(loss_dict_reduced["qpair_pos_mean"].item()),
+                qpair_neg_mean=float(loss_dict_reduced["qpair_neg_mean"].item()),
+                qpair_gap=float(loss_dict_reduced["qpair_gap"].item()),
+                qpair_matched_query_count=float(loss_dict_reduced["qpair_matched_query_count"].item()),
+                qpair_active_pair_count=float(loss_dict_reduced["qpair_active_pair_count"].item()),
+            )
     if args.use_olic and "small_valid_obj_per_actor" in outputs:
         metric_logger.update(
             small_valid_obj_per_actor=float(outputs["small_valid_obj_per_actor"].mean().item()),

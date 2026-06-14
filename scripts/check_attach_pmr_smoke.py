@@ -164,9 +164,23 @@ def main():
         expected_pair_shape = [bs, k, n, n] if args.use_query_conditioned_pmr else [bs, n, n]
         require("pairwise_affinity_logits shape", list(outputs["pairwise_affinity_logits"].shape) == expected_pair_shape)
         summary["pairwise_affinity_logits"] = tensor_summary(outputs["pairwise_affinity_logits"])
-        for key in ("pair_pos_mean", "pair_neg_mean", "pair_gap"):
-            require(f"{key} in loss_dict", key in loss_dict)
-            summary[key] = float(loss_dict[key].detach().item())
+        if args.use_query_conditioned_pmr:
+            require("loss_query_pairwise_group in loss_dict", "loss_query_pairwise_group" in loss_dict)
+            for key in (
+                "loss_query_pairwise_group",
+                "qpair_pos_mean",
+                "qpair_neg_mean",
+                "qpair_gap",
+                "qpair_matched_query_count",
+                "qpair_active_pair_count",
+            ):
+                require(f"{key} in loss_dict", key in loss_dict)
+                summary[key] = float(loss_dict[key].detach().item())
+            require("legacy loss_pairwise_group absent for qPMR", "loss_pairwise_group" not in loss_dict)
+        else:
+            for key in ("pair_pos_mean", "pair_neg_mean", "pair_gap"):
+                require(f"{key} in loss_dict", key in loss_dict)
+                summary[key] = float(loss_dict[key].detach().item())
 
     if args.use_attach_head:
         require("attach_logits exists", "attach_logits" in outputs)

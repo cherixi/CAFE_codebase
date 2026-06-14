@@ -176,6 +176,8 @@ def build_parser():
     parser.set_defaults(pairwise_use_geom_relation=True)
     parser.add_argument('--pairwise_loss_coef', default=0.25, type=float,
                         help='loss weight for pairwise same-group supervision')
+    parser.add_argument('--query_pairwise_loss_coef', default=0.10, type=float,
+                        help='loss weight for matched-query pairwise supervision when qPMR is enabled')
     parser.add_argument('--pairwise_refine_scale', default=0.5, type=float,
                         help='residual scale for pairwise membership refinement')
     qpmr_group = parser.add_mutually_exclusive_group()

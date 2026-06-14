@@ -178,6 +178,8 @@ geomrel_group.add_argument('--no_pairwise_use_geom_relation', dest='pairwise_use
 parser.set_defaults(pairwise_use_geom_relation=True)
 parser.add_argument('--pairwise_loss_coef', default=0.25, type=float,
                     help='loss weight for pairwise same-group supervision')
+parser.add_argument('--query_pairwise_loss_coef', default=0.10, type=float,
+                    help='loss weight for matched-query pairwise supervision when qPMR is enabled')
 parser.add_argument('--pairwise_refine_scale', default=0.5, type=float,
                     help='residual scale for pairwise membership refinement')
 qpmr_group = parser.add_mutually_exclusive_group()
@@ -368,7 +370,7 @@ def main():
         print_log(
             save_path,
             f"PMR cfg: refine_scale={args.pairwise_refine_scale}, loss_coef={args.pairwise_loss_coef}, "
-            f"query_conditioned={int(args.use_query_conditioned_pmr)}, "
+            f"query_loss_coef={args.query_pairwise_loss_coef}, query_conditioned={int(args.use_query_conditioned_pmr)}, "
             f"use_geom={int(args.pairwise_use_geom_relation)}, use_obj={int(args.pairwise_use_object_relation)}, "
             f"use_small_obj={int(args.pairwise_use_small_object_relation)}, use_anchor={int(args.pairwise_use_anchor_relation)}, "
             f"anchor_source={args.pmr_anchor_source}"
@@ -569,6 +571,21 @@ def main():
                     train_log.get('group_olic_disabled', 0.0),
                 )
             )
+        if args.use_pairwise_refiner and 'qpair_pos_mean' in train_log:
+            print_log(
+                save_path,
+                "QPMR(train): loss=%.4f pos=%.4f neg=%.4f gap=%.4f matched=%.1f active_pairs=%.1f refine=%.4f support=%.4f"
+                % (
+                    train_log.get('query_pairwise_loss', train_log.get('loss_query_pairwise_group_unscaled', 0.0)),
+                    train_log.get('qpair_pos_mean', 0.0),
+                    train_log.get('qpair_neg_mean', 0.0),
+                    train_log.get('qpair_gap', 0.0),
+                    train_log.get('qpair_matched_query_count', 0.0),
+                    train_log.get('qpair_active_pair_count', 0.0),
+                    train_log.get('pairwise_refine_delta_mean', 0.0),
+                    train_log.get('qpmr_support_abs_mean', 0.0),
+                )
+            )
         if args.use_attach_head and 'attach_pos_mean' in train_log:
             print_log(
                 save_path,
@@ -649,6 +666,21 @@ def main():
                         test_log.get('query_conditioned_pmr', 0.0),
                         test_log.get('type_aware_object_token', 0.0),
                         test_log.get('group_olic_disabled', 0.0),
+                    )
+                )
+            if args.use_pairwise_refiner and 'qpair_pos_mean' in test_log:
+                print_log(
+                    save_path,
+                    "QPMR(test): loss=%.4f pos=%.4f neg=%.4f gap=%.4f matched=%.1f active_pairs=%.1f refine=%.4f support=%.4f"
+                    % (
+                        test_log.get('query_pairwise_loss', test_log.get('loss_query_pairwise_group_unscaled', 0.0)),
+                        test_log.get('qpair_pos_mean', 0.0),
+                        test_log.get('qpair_neg_mean', 0.0),
+                        test_log.get('qpair_gap', 0.0),
+                        test_log.get('qpair_matched_query_count', 0.0),
+                        test_log.get('qpair_active_pair_count', 0.0),
+                        test_log.get('pairwise_refine_delta_mean', 0.0),
+                        test_log.get('qpmr_support_abs_mean', 0.0),
                     )
                 )
             if args.use_attach_head and 'attach_pos_mean' in test_log:
@@ -865,6 +897,15 @@ def train(train_loader, model, criterion, optimizer, epoch):
                     pair_neg_mean=float(loss_dict_reduced['pair_neg_mean'].item()),
                     pair_gap=float(loss_dict_reduced['pair_gap'].item()),
                 )
+            if 'qpair_pos_mean' in loss_dict_reduced:
+                metric_logger.update(
+                    query_pairwise_loss=float(loss_dict_reduced['loss_query_pairwise_group'].item()),
+                    qpair_pos_mean=float(loss_dict_reduced['qpair_pos_mean'].item()),
+                    qpair_neg_mean=float(loss_dict_reduced['qpair_neg_mean'].item()),
+                    qpair_gap=float(loss_dict_reduced['qpair_gap'].item()),
+                    qpair_matched_query_count=float(loss_dict_reduced['qpair_matched_query_count'].item()),
+                    qpair_active_pair_count=float(loss_dict_reduced['qpair_active_pair_count'].item()),
+                )
         if args.use_attach_head and 'attach_pos_mean' in loss_dict_reduced:
             metric_logger.update(
                 attach_loss=float(loss_dict_reduced['loss_attach'].item()),
@@ -999,6 +1040,15 @@ def validate(test_loader, model, criterion, metrics, epoch):
                     pair_pos_mean=float(loss_dict_reduced['pair_pos_mean'].item()),
                     pair_neg_mean=float(loss_dict_reduced['pair_neg_mean'].item()),
                     pair_gap=float(loss_dict_reduced['pair_gap'].item()),
+                )
+            if 'qpair_pos_mean' in loss_dict_reduced:
+                metric_logger.update(
+                    query_pairwise_loss=float(loss_dict_reduced['loss_query_pairwise_group'].item()),
+                    qpair_pos_mean=float(loss_dict_reduced['qpair_pos_mean'].item()),
+                    qpair_neg_mean=float(loss_dict_reduced['qpair_neg_mean'].item()),
+                    qpair_gap=float(loss_dict_reduced['qpair_gap'].item()),
+                    qpair_matched_query_count=float(loss_dict_reduced['qpair_matched_query_count'].item()),
+                    qpair_active_pair_count=float(loss_dict_reduced['qpair_active_pair_count'].item()),
                 )
         if args.use_attach_head and 'attach_pos_mean' in loss_dict_reduced:
             metric_logger.update(
