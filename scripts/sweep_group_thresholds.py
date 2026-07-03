@@ -109,6 +109,13 @@ def build_eval_args(cli_args, checkpoint_path: Path):
         "num_frame",
         "num_object_boxes",
         "pmr_anchor_source",
+        "use_interaction_stir",
+        "interaction_stage",
+        "interaction_use_anchors",
+        "interaction_use_small_objects",
+        "interaction_anchor_scale_max",
+        "interaction_anchor_scale_init",
+        "interaction_anchor_bias_clip",
         "eval_image_width",
         "eval_image_height",
         "eval_num_workers",
@@ -267,6 +274,19 @@ def main():
     parser.add_argument("--num_frame", default=None, type=int)
     parser.add_argument("--num_object_boxes", default=None, type=int)
     parser.add_argument("--pmr_anchor_source", default=None, choices=["auto", "gdino", "yolo"])
+    interaction_group = parser.add_mutually_exclusive_group()
+    interaction_group.add_argument("--use_interaction_stir", dest="use_interaction_stir", default=None, action="store_true")
+    interaction_group.add_argument("--no_interaction_stir", dest="use_interaction_stir", action="store_false")
+    parser.add_argument("--interaction_stage", default=None, choices=["anchor_only", "anchor_small_msg", "full"])
+    anchor_group = parser.add_mutually_exclusive_group()
+    anchor_group.add_argument("--interaction_use_anchors", dest="interaction_use_anchors", default=None, action="store_true")
+    anchor_group.add_argument("--no_interaction_use_anchors", dest="interaction_use_anchors", action="store_false")
+    small_group = parser.add_mutually_exclusive_group()
+    small_group.add_argument("--interaction_use_small_objects", dest="interaction_use_small_objects", default=None, action="store_true")
+    small_group.add_argument("--no_interaction_use_small_objects", dest="interaction_use_small_objects", action="store_false")
+    parser.add_argument("--interaction_anchor_scale_max", default=None, type=float)
+    parser.add_argument("--interaction_anchor_scale_init", default=None, type=float)
+    parser.add_argument("--interaction_anchor_bias_clip", default=None, type=float)
     parser.add_argument("--eval_image_width", default=None, type=int)
     parser.add_argument("--eval_image_height", default=None, type=int)
     parser.add_argument("--eval_num_workers", default=0, type=int)

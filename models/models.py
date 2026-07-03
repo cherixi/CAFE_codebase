@@ -8,7 +8,7 @@ from torchvision.ops import RoIAlign
 from .backbone import build_backbone
 from .group_transformer import build_group_transformer
 from .feed_forward import MLP
-from .hoi_graph import FrameHOIGraph, TemporalEncoder
+from .hoi_graph import FrameHOIGraph, FrameInteractionGraph, TemporalEncoder
 from .videomae_adapter import VideoMAEAdapter
 
 
@@ -53,20 +53,64 @@ class GADTR(nn.Module):
         hoi_hard_thresh = getattr(args, 'hoi_hard_thresh', None)
         if hoi_hard_thresh is None:
             hoi_hard_thresh = getattr(args, 'distance_threshold', None)
+        self.use_interaction_stir = bool(getattr(args, 'use_interaction_stir', False))
+        if self.use_interaction_stir and self.hoi_mode == 'none':
+            raise ValueError('IA-STIR requires hoi_mode != none because it replaces the frame-level graph.')
+        self.interaction_stage = str(getattr(args, 'interaction_stage', 'anchor_only'))
+        if self.interaction_stage not in {'anchor_only', 'anchor_small_msg', 'full'}:
+            self.interaction_stage = 'anchor_only'
+        self.interaction_use_anchors = bool(getattr(args, 'interaction_use_anchors', True))
+        self.interaction_use_small_objects = bool(getattr(args, 'interaction_use_small_objects', False))
+        interaction_anchor_source = str(getattr(args, 'pmr_anchor_source', 'gdino')).lower()
+        if interaction_anchor_source == 'auto':
+            object_source_hint = str(getattr(args, 'object_tracks_pkl', '') or '').lower()
+            interaction_anchor_source = 'yolo' if 'yolo' in object_source_hint else 'gdino'
+        if interaction_anchor_source not in {'gdino', 'yolo'}:
+            interaction_anchor_source = 'gdino'
+        self.interaction_anchor_source = interaction_anchor_source
+        self.interaction_anchor_scale_max = float(getattr(args, 'interaction_anchor_scale_max', 0.5))
+        self.interaction_anchor_scale_init = float(getattr(args, 'interaction_anchor_scale_init', -6.0))
+        self.interaction_anchor_bias_clip = float(getattr(args, 'interaction_anchor_bias_clip', 2.0))
+        if self.use_interaction_stir:
+            if self.interaction_stage != 'anchor_only':
+                raise NotImplementedError(
+                    'IA-STIR v1 currently implements only interaction_stage=anchor_only.'
+                )
+            if self.interaction_use_small_objects:
+                raise NotImplementedError(
+                    'IA-STIR v1 intentionally keeps small-object messages disabled.'
+                )
 
         if self.hoi_mode != 'none':
             use_geom_bias = self.hoi_mode in ['bias', 'penalty']
             use_logit_penalty = self.hoi_mode == 'penalty'
             hard_mask_thresh = hoi_hard_thresh if self.hoi_mode == 'hard_mask' else None
-            self.frame_graph = FrameHOIGraph(
-                self.hidden_dim,
-                nhead=hoi_nheads,
-                dropout=args.drop_rate,
-                topk=hoi_topk,
-                use_geom_bias=use_geom_bias,
-                use_logit_penalty=use_logit_penalty,
-                hard_mask_thresh=hard_mask_thresh,
-            )
+            if self.use_interaction_stir:
+                self.frame_graph = FrameInteractionGraph(
+                    self.hidden_dim,
+                    nhead=hoi_nheads,
+                    dropout=args.drop_rate,
+                    topk=hoi_topk,
+                    use_geom_bias=use_geom_bias,
+                    use_logit_penalty=use_logit_penalty,
+                    hard_mask_thresh=hard_mask_thresh,
+                    use_anchors=self.interaction_use_anchors,
+                    anchor_scale_max=self.interaction_anchor_scale_max,
+                    anchor_scale_init=self.interaction_anchor_scale_init,
+                    anchor_bias_clip=self.interaction_anchor_bias_clip,
+                    anchor_attn_tau=float(getattr(args, 'anchor_attn_tau', 3.0)),
+                    anchor_source=self.interaction_anchor_source,
+                )
+            else:
+                self.frame_graph = FrameHOIGraph(
+                    self.hidden_dim,
+                    nhead=hoi_nheads,
+                    dropout=args.drop_rate,
+                    topk=hoi_topk,
+                    use_geom_bias=use_geom_bias,
+                    use_logit_penalty=use_logit_penalty,
+                    hard_mask_thresh=hard_mask_thresh,
+                )
         else:
             self.frame_graph = None
         self.temporal_encoder = TemporalEncoder(self.hidden_dim, nhead=args.gar_nheads, 
@@ -85,7 +129,10 @@ class GADTR(nn.Module):
         # Membership prediction heads
         self.actor_match_emb = nn.Linear(self.hidden_dim, self.hidden_dim)
         self.group_match_emb = nn.Linear(self.hidden_dim, self.hidden_dim)
-        self.use_pairwise_refiner = bool(getattr(args, 'use_pairwise_refiner', True))
+        pairwise_refiner_arg = getattr(args, 'use_pairwise_refiner', None)
+        if pairwise_refiner_arg is None:
+            pairwise_refiner_arg = not self.use_interaction_stir
+        self.use_pairwise_refiner = bool(pairwise_refiner_arg)
         self.pairwise_refine_scale = float(getattr(args, 'pairwise_refine_scale', 0.5))
         self.pairwise_use_object_relation = bool(getattr(args, 'pairwise_use_object_relation', True))
         self.pairwise_use_geom_relation = bool(getattr(args, 'pairwise_use_geom_relation', True))
@@ -106,7 +153,10 @@ class GADTR(nn.Module):
             )
 
         # OLIC (Object-Conditioned Local Interaction Conditioner)
-        self.use_olic = bool(getattr(args, 'use_olic', False))
+        use_olic_arg = getattr(args, 'use_olic', None)
+        if use_olic_arg is None:
+            use_olic_arg = not self.use_interaction_stir
+        self.use_olic = bool(use_olic_arg)
         self.disable_group_olic = bool(getattr(args, 'disable_group_olic', True))
         self.olic_topk_obj = int(getattr(args, 'olic_topk_obj', 6))
         self.olic_dropout_p = float(getattr(args, 'olic_dropout', args.drop_rate))
@@ -131,7 +181,8 @@ class GADTR(nn.Module):
         self.service_family_id = 4
         self.table_family_id = 5
 
-        if self.use_olic:
+        self.use_object_context = self.use_olic or self.use_interaction_stir
+        if self.use_object_context:
             # Object tokenization uses the same RoIAlign config as actor path.
             self.obj_fc_emb = nn.Linear(
                 self.crop_size * self.crop_size * self.backbone.num_channels,
@@ -140,6 +191,7 @@ class GADTR(nn.Module):
             self.obj_drop_emb = nn.Dropout(p=args.drop_rate)
             self.obj_box_pos_emb = MLP(4, self.hidden_dim, self.hidden_dim, 3)
 
+        if self.use_olic:
             # Legacy relevance head kept for checkpoint compatibility.
             # Pruning is disabled in the current stable OLIC path.
             self.olic_relevance_mlp = MLP(2 * self.hidden_dim + 7, self.hidden_dim, 1, 3)
@@ -331,6 +383,82 @@ class GADTR(nn.Module):
         diff_norm = torch.norm(diff, dim=-1)
         return torch.stack((cos, diff_norm), dim=-1)
 
+    def _build_object_tokens(
+        self,
+        features,
+        object_boxes_xyxy,
+        object_valid_mask,
+        object_family_id,
+        object_token_id,
+        oh,
+        ow,
+    ):
+        # Shared object tokenization for IA-STIR and OLIC.
+        bs, t, m, _ = object_boxes_xyxy.shape
+        bt = bs * t
+
+        obj_xyxy = object_boxes_xyxy.reshape(bt, m, 4).clamp(0.0, 1.0)
+        ox1, oy1, ox2, oy2 = obj_xyxy.unbind(-1)
+        ox1, ox2 = torch.minimum(ox1, ox2), torch.maximum(ox1, ox2)
+        oy1, oy2 = torch.minimum(oy1, oy2), torch.maximum(oy1, oy2)
+        obj_xyxy = torch.stack((ox1, oy1, ox2, oy2), dim=-1)
+        obj_cxcywh = self._xyxy_to_cxcywh(obj_xyxy)
+
+        obj_valid = object_valid_mask.reshape(bt, m) > 0.5
+        if object_family_id is not None:
+            obj_family = object_family_id.reshape(bt, m).long()
+            has_family_ids = bool((obj_family > 0).any().item())
+        else:
+            obj_family = torch.zeros((bt, m), dtype=torch.long, device=obj_xyxy.device)
+            has_family_ids = False
+        if object_token_id is not None:
+            obj_token_id = object_token_id.reshape(bt, m).long()
+        else:
+            obj_token_id = torch.zeros((bt, m), dtype=torch.long, device=obj_xyxy.device)
+
+        if has_family_ids:
+            small_mask = obj_valid & (
+                (obj_family == self.phone_family_id)
+                | (obj_family == self.study_family_id)
+                | (obj_family == self.dining_family_id)
+            )
+            anchor_mask = obj_valid & (
+                (obj_family == self.service_family_id)
+                | (obj_family == self.table_family_id)
+            )
+        else:
+            small_mask = obj_valid
+            anchor_mask = obj_valid.new_zeros(obj_valid.shape)
+
+        obj_pixel = obj_xyxy.clone()
+        obj_pixel[..., 0] = obj_xyxy[..., 0] * ow
+        obj_pixel[..., 1] = obj_xyxy[..., 1] * oh
+        obj_pixel[..., 2] = obj_xyxy[..., 2] * ow
+        obj_pixel[..., 3] = obj_xyxy[..., 3] * oh
+        obj_pixel[..., 2] = torch.maximum(obj_pixel[..., 2], obj_pixel[..., 0] + 1e-3)
+        obj_pixel[..., 3] = torch.maximum(obj_pixel[..., 3], obj_pixel[..., 1] + 1e-3)
+
+        boxes_list = [obj_pixel[i] for i in range(bt)]
+        obj_features = self.roi_align(features, boxes_list)
+        obj_features = obj_features.reshape(bt * m, -1)
+        obj_features = self.obj_fc_emb(obj_features)
+        obj_features = F.relu(obj_features)
+        obj_features = self.obj_drop_emb(obj_features)
+        obj_features = obj_features.reshape(bt, m, self.hidden_dim)
+        obj_features = obj_features + self.obj_box_pos_emb(obj_cxcywh.reshape(bt, m, 4))
+
+        return {
+            "tokens": obj_features,
+            "xyxy": obj_xyxy,
+            "cxcywh": obj_cxcywh,
+            "valid": obj_valid,
+            "family": obj_family,
+            "token_id": obj_token_id,
+            "small_mask": small_mask,
+            "anchor_mask": anchor_mask,
+            "has_family_ids": has_family_ids,
+        }
+
     @staticmethod
     def _aggregate_anchor_relations(anchor_attn, object_scores, object_family_id, object_valid_mask, anchor_source='gdino'):
         # anchor_attn: [B, T, N, M], object_scores/family/valid: [B, T, M]
@@ -458,6 +586,8 @@ class GADTR(nn.Module):
         object_family_id,
         oh,
         ow,
+        object_token_id=None,
+        object_context=None,
     ):
         # shapes:
         # features: [BT, C, oh, ow]
@@ -474,39 +604,22 @@ class GADTR(nn.Module):
         group_tokens_bt = group_tokens_for_olic.reshape(bt, self.num_group_tokens, self.hidden_dim)
         actor_boxes_bt = actor_boxes_norm.reshape(bt, n, 4)
         actor_xyxy_bt = self._cxcywh_to_xyxy(actor_boxes_bt).clamp(0.0, 1.0)
-
-        obj_xyxy = object_boxes_xyxy.reshape(bt, m, 4).clamp(0.0, 1.0)
-        ox1, oy1, ox2, oy2 = obj_xyxy.unbind(-1)
-        ox1, ox2 = torch.minimum(ox1, ox2), torch.maximum(ox1, ox2)
-        oy1, oy2 = torch.minimum(oy1, oy2), torch.maximum(oy1, oy2)
-        obj_xyxy = torch.stack((ox1, oy1, ox2, oy2), dim=-1)
-        obj_cxcywh = self._xyxy_to_cxcywh(obj_xyxy)
-
-        obj_valid = object_valid_mask.reshape(bt, m) > 0.5
-        if object_family_id is not None:
-            obj_family = object_family_id.reshape(bt, m).long()
-            has_family_ids = bool((obj_family > 0).any().item())
-        else:
-            obj_family = torch.zeros((bt, m), dtype=torch.long, device=obj_xyxy.device)
-            has_family_ids = False
-
-        # Object RoIAlign on the same feature map scale/path as actor RoIAlign.
-        obj_pixel = obj_xyxy.clone()
-        obj_pixel[..., 0] = obj_xyxy[..., 0] * ow
-        obj_pixel[..., 1] = obj_xyxy[..., 1] * oh
-        obj_pixel[..., 2] = obj_xyxy[..., 2] * ow
-        obj_pixel[..., 3] = obj_xyxy[..., 3] * oh
-        obj_pixel[..., 2] = torch.maximum(obj_pixel[..., 2], obj_pixel[..., 0] + 1e-3)
-        obj_pixel[..., 3] = torch.maximum(obj_pixel[..., 3], obj_pixel[..., 1] + 1e-3)
-
-        boxes_list = [obj_pixel[i] for i in range(bt)]
-        obj_features = self.roi_align(features, boxes_list)
-        obj_features = obj_features.reshape(bt * m, -1)
-        obj_features = self.obj_fc_emb(obj_features)
-        obj_features = F.relu(obj_features)
-        obj_features = self.obj_drop_emb(obj_features)
-        obj_features = obj_features.reshape(bt, m, self.hidden_dim)
-        obj_features = obj_features + self.obj_box_pos_emb(obj_cxcywh.reshape(bt, m, 4))
+        if object_context is None:
+            object_context = self._build_object_tokens(
+                features=features,
+                object_boxes_xyxy=object_boxes_xyxy,
+                object_valid_mask=object_valid_mask,
+                object_family_id=object_family_id,
+                object_token_id=object_token_id,
+                oh=oh,
+                ow=ow,
+            )
+        obj_features = object_context["tokens"]
+        obj_xyxy = object_context["xyxy"]
+        obj_cxcywh = object_context["cxcywh"]
+        obj_valid = object_context["valid"]
+        obj_family = object_context["family"]
+        has_family_ids = object_context["has_family_ids"]
 
         actor_valid = actor_valid_mask_bt_n.bool()
 
@@ -526,15 +639,8 @@ class GADTR(nn.Module):
         geom_scale = self.olic_geom_scale_max * torch.sigmoid(self.olic_geom_scale_logit)
         geom_bias_scaled = geom_scale * geom_bias
         if self.use_dual_object_channels and has_family_ids:
-            small_obj_mask = obj_valid & (
-                (obj_family == self.phone_family_id)
-                | (obj_family == self.study_family_id)
-                | (obj_family == self.dining_family_id)
-            )
-            anchor_obj_mask = obj_valid & (
-                (obj_family == self.service_family_id)
-                | (obj_family == self.table_family_id)
-            )
+            small_obj_mask = object_context["small_mask"]
+            anchor_obj_mask = object_context["anchor_mask"]
         else:
             small_obj_mask = obj_valid
             anchor_obj_mask = obj_valid.new_zeros(obj_valid.shape)
@@ -679,11 +785,62 @@ class GADTR(nn.Module):
         box_pos_emb = torch.reshape(box_pos_emb, (bs, t, n, -1))                        # [b, t, n, c]
         actor_features = actor_features + box_pos_emb
 
+        object_context = None
+        has_object_context_inputs = (
+            self.use_object_context
+            and object_boxes_xyxy is not None
+            and object_valid_mask is not None
+            and object_scores is not None
+        )
+        if has_object_context_inputs:
+            object_context = self._build_object_tokens(
+                features=features,
+                object_boxes_xyxy=object_boxes_xyxy,
+                object_valid_mask=object_valid_mask,
+                object_family_id=object_family_id,
+                object_token_id=object_token_id,
+                oh=oh,
+                ow=ow,
+            )
+
+        interaction_diag = {
+            "interaction_stir_enabled": actor_features.new_tensor(1.0 if self.use_interaction_stir else 0.0),
+            "interaction_anchor_bias_mean": actor_features.new_tensor(0.0),
+            "interaction_anchor_bias_abs_mean": actor_features.new_tensor(0.0),
+            "interaction_anchor_bias_max": actor_features.new_tensor(0.0),
+            "interaction_anchor_bias_min": actor_features.new_tensor(0.0),
+            "interaction_anchor_bias_pos_ratio": actor_features.new_tensor(0.0),
+            "interaction_anchor_bias_neg_ratio": actor_features.new_tensor(0.0),
+            "interaction_anchor_shared_table_mean": actor_features.new_tensor(0.0),
+            "interaction_anchor_shared_service_mean": actor_features.new_tensor(0.0),
+            "interaction_anchor_scale_mean": actor_features.new_tensor(0.0),
+            "interaction_anchor_top1_mean": actor_features.new_tensor(0.0),
+            "interaction_anchor_valid_per_actor": actor_features.new_tensor(0.0),
+        }
+
         # frame-level HOI mapping on actor tokens
         if self.frame_graph is not None:
             actor_graph_in = actor_features.reshape(bs * t, n, self.hidden_dim)
             boxes_for_graph = boxes_norm.reshape(bs * t, n, 4)
-            actor_graph_out, _ = self.frame_graph(actor_graph_in, boxes_for_graph, attn_mask=actor_mask)
+            if self.use_interaction_stir:
+                object_tokens = object_context["tokens"] if object_context is not None else None
+                object_xyxy = object_context["xyxy"] if object_context is not None else None
+                object_valid = object_context["valid"] if object_context is not None else None
+                object_family = object_context["family"] if object_context is not None else None
+                object_scores_bt = object_scores.reshape(bs * t, -1) if object_scores is not None else None
+                actor_graph_out, _, interaction_diag = self.frame_graph(
+                    actor_graph_in,
+                    boxes_for_graph,
+                    attn_mask=actor_mask,
+                    actor_valid_mask=(~dummy_mask),
+                    object_tokens=object_tokens,
+                    object_boxes_xyxy=object_xyxy,
+                    object_scores=object_scores_bt,
+                    object_family_id=object_family,
+                    object_valid_mask=object_valid,
+                )
+            else:
+                actor_graph_out, _ = self.frame_graph(actor_graph_in, boxes_for_graph, attn_mask=actor_mask)
             actor_features = actor_graph_out.reshape(bs, t, n, self.hidden_dim)
 
         # group transformer
@@ -740,6 +897,8 @@ class GADTR(nn.Module):
                 object_family_id=object_family_id,
                 oh=oh,
                 ow=ow,
+                object_token_id=object_token_id,
+                object_context=object_context,
             )
 
             actor_hs = actor_hs + olic_scale * self.olic_actor_res_scale * self.olic_drop(alpha_o * c_actor)
@@ -862,6 +1021,18 @@ class GADTR(nn.Module):
             "olic_geom_scale": olic_diag["olic_geom_scale"].detach(),
             "shared_table_mean": shared_table_mean.detach(),
             "shared_service_mean": shared_service_mean.detach(),
+            "interaction_stir_enabled": interaction_diag["interaction_stir_enabled"].detach(),
+            "interaction_anchor_bias_mean": interaction_diag["interaction_anchor_bias_mean"].detach(),
+            "interaction_anchor_bias_abs_mean": interaction_diag["interaction_anchor_bias_abs_mean"].detach(),
+            "interaction_anchor_bias_max": interaction_diag["interaction_anchor_bias_max"].detach(),
+            "interaction_anchor_bias_min": interaction_diag["interaction_anchor_bias_min"].detach(),
+            "interaction_anchor_bias_pos_ratio": interaction_diag["interaction_anchor_bias_pos_ratio"].detach(),
+            "interaction_anchor_bias_neg_ratio": interaction_diag["interaction_anchor_bias_neg_ratio"].detach(),
+            "interaction_anchor_shared_table_mean": interaction_diag["interaction_anchor_shared_table_mean"].detach(),
+            "interaction_anchor_shared_service_mean": interaction_diag["interaction_anchor_shared_service_mean"].detach(),
+            "interaction_anchor_scale_mean": interaction_diag["interaction_anchor_scale_mean"].detach(),
+            "interaction_anchor_top1_mean": interaction_diag["interaction_anchor_top1_mean"].detach(),
+            "interaction_anchor_valid_per_actor": interaction_diag["interaction_anchor_valid_per_actor"].detach(),
         }
 
         return out

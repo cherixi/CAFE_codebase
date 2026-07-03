@@ -93,7 +93,7 @@ olic_group.add_argument('--use_olic', dest='use_olic', action='store_true',
                         help='enable OLIC object-conditioned branch')
 olic_group.add_argument('--no_olic', dest='use_olic', action='store_false',
                         help='disable OLIC object-conditioned branch')
-parser.set_defaults(use_olic=True)
+parser.set_defaults(use_olic=None)
 group_olic_group = parser.add_mutually_exclusive_group()
 group_olic_group.add_argument('--disable_group_olic', dest='disable_group_olic', action='store_true',
                               help='disable group-side OLIC fusion and keep actor-side OLIC only')
@@ -101,7 +101,7 @@ group_olic_group.add_argument('--enable_group_olic', dest='disable_group_olic', 
                               help='enable group-side OLIC fusion')
 parser.set_defaults(disable_group_olic=True)
 parser.add_argument('--object_tracks_pkl', default='', type=str,
-                    help='path to object track pkl; default: <data_path>/cafe/object_tracks_gdino_swinb_localmix_membership.pkl')
+                    help='path to object track pkl; default: IA-STIR prefers <data_path>/cafe/object_tracks_gdino_swinb_localmix_membership_tablemerge.pkl if present, otherwise <data_path>/cafe/object_tracks_gdino_swinb_localmix_membership.pkl')
 parser.add_argument('--num_object_boxes', default=20, type=int, help='fixed number of object boxes per frame')
 parser.add_argument('--olic_topk_obj', default=6, type=int,
                     help='(deprecated) top-k objects per actor for relevance pruning; pruning is disabled in current stable path')
@@ -134,12 +134,42 @@ parser.add_argument('--olic_geom_scale_init', default=1.0, type=float,
                     help='initial scale for geometry bias term in OLIC routing')
 parser.add_argument('--olic_geom_scale_max', default=2.0, type=float,
                     help='maximum geometry scale for OLIC routing (learnable scale is constrained to [0, max])')
+
+# IA-STIR / FrameInteractionGraph
+interaction_group = parser.add_mutually_exclusive_group()
+interaction_group.add_argument('--use_interaction_stir', dest='use_interaction_stir', action='store_true',
+                               help='replace FrameHOIGraph with anchor-aware FrameInteractionGraph')
+interaction_group.add_argument('--no_interaction_stir', dest='use_interaction_stir', action='store_false',
+                               help='use the original actor-only FrameHOIGraph')
+parser.set_defaults(use_interaction_stir=False)
+parser.add_argument('--interaction_stage', default='anchor_only', type=str,
+                    choices=['anchor_only', 'anchor_small_msg', 'full'],
+                    help='IA-STIR stage; v1 implements anchor_only')
+anchor_interaction_group = parser.add_mutually_exclusive_group()
+anchor_interaction_group.add_argument('--interaction_use_anchors', dest='interaction_use_anchors', action='store_true',
+                                      help='use table/service anchors to modulate actor-actor graph edges')
+anchor_interaction_group.add_argument('--no_interaction_use_anchors', dest='interaction_use_anchors', action='store_false',
+                                      help='disable anchor edge modulation')
+parser.set_defaults(interaction_use_anchors=True)
+small_interaction_group = parser.add_mutually_exclusive_group()
+small_interaction_group.add_argument('--interaction_use_small_objects', dest='interaction_use_small_objects', action='store_true',
+                                     help='reserved for weak small-object actor messages in later IA-STIR stages')
+small_interaction_group.add_argument('--no_interaction_use_small_objects', dest='interaction_use_small_objects', action='store_false',
+                                     help='disable small-object messages in IA-STIR')
+parser.set_defaults(interaction_use_small_objects=False)
+parser.add_argument('--interaction_anchor_scale_max', default=0.5, type=float,
+                    help='maximum IA-STIR anchor edge-bias scale')
+parser.add_argument('--interaction_anchor_scale_init', default=-6.0, type=float,
+                    help='initial logit for IA-STIR anchor edge-bias scale; negative keeps it near zero')
+parser.add_argument('--interaction_anchor_bias_clip', default=2.0, type=float,
+                    help='clip value for IA-STIR anchor edge bias before applying the learned scale')
+
 pairwise_group = parser.add_mutually_exclusive_group()
 pairwise_group.add_argument('--use_pairwise_refiner', dest='use_pairwise_refiner', action='store_true',
                             help='enable pairwise membership refiner')
 pairwise_group.add_argument('--no_pairwise_refiner', dest='use_pairwise_refiner', action='store_false',
                             help='disable pairwise membership refiner')
-parser.set_defaults(use_pairwise_refiner=True)
+parser.set_defaults(use_pairwise_refiner=None)
 objrel_group = parser.add_mutually_exclusive_group()
 objrel_group.add_argument('--pairwise_use_object_relation', dest='pairwise_use_object_relation', action='store_true',
                           help='use actor-side object summaries in pairwise affinity')
@@ -288,6 +318,27 @@ def main():
     else:
         args.mae_dim = 0
 
+    # Conditional defaults:
+    # - Historical runs keep OLIC/PMR enabled unless explicitly disabled.
+    # - IA-STIR Stage 1A should be clean by default: anchor-only graph, no
+    #   post-transformer OLIC residual and no PMR head-side refinement.
+    if args.use_olic is None:
+        args.use_olic = not args.use_interaction_stir
+    if args.use_pairwise_refiner is None:
+        args.use_pairwise_refiner = not args.use_interaction_stir
+    if (args.use_olic or args.use_interaction_stir) and not args.object_tracks_pkl:
+        object_data_path = os.path.join(args.data_path, args.dataset)
+        if args.use_interaction_stir:
+            tablemerge_pkl = os.path.join(
+                object_data_path, 'object_tracks_gdino_swinb_localmix_membership_tablemerge.pkl'
+            )
+            fallback_pkl = os.path.join(object_data_path, 'object_tracks_gdino_swinb_localmix_membership.pkl')
+            args.object_tracks_pkl = tablemerge_pkl if os.path.exists(tablemerge_pkl) else fallback_pkl
+        else:
+            args.object_tracks_pkl = os.path.join(
+                object_data_path, 'object_tracks_gdino_swinb_localmix_membership.pkl'
+            )
+
     if args.olic_dropout < 0:
         args.olic_dropout = args.drop_rate
     if args.olic_warmup_epochs < 0:
@@ -299,6 +350,23 @@ def main():
     if args.pmr_anchor_source == 'auto':
         object_source_hint = str(args.object_tracks_pkl or '').lower()
         args.pmr_anchor_source = 'yolo' if 'yolo' in object_source_hint else 'gdino'
+    if args.interaction_anchor_scale_max <= 0:
+        args.interaction_anchor_scale_max = 0.5
+    if args.interaction_anchor_bias_clip <= 0:
+        args.interaction_anchor_bias_clip = 2.0
+    if args.use_interaction_stir:
+        if args.hoi_mode == 'none':
+            raise ValueError("IA-STIR requires --hoi_mode bias, hard_mask, or penalty; got --hoi_mode none.")
+        if args.interaction_stage != 'anchor_only':
+            raise NotImplementedError(
+                "IA-STIR v1 currently implements only --interaction_stage anchor_only. "
+                "Run Stage 1B/1C after small-object message/compatibility is implemented."
+            )
+        if args.interaction_use_small_objects:
+            raise NotImplementedError(
+                "IA-STIR v1 intentionally keeps small-object messages disabled. "
+                "Use --no_interaction_use_small_objects for Stage 1A."
+            )
 
     if args.use_olic:
         print_log(save_path, f"----------------------------------------------------------------")
@@ -318,6 +386,17 @@ def main():
         print_log(save_path, f"----------------------------------------------------------------")
         print_log(save_path, "OLIC: DISABLED")
         print_log(save_path, f"----------------------------------------------------------------")
+    print_log(save_path, f"IA-STIR: {'ENABLED' if args.use_interaction_stir else 'DISABLED'}")
+    if args.use_interaction_stir:
+        print_log(
+            save_path,
+            f"IA-STIR cfg: stage={args.interaction_stage}, use_anchors={int(args.interaction_use_anchors)}, "
+            f"use_small_objects={int(args.interaction_use_small_objects)}, "
+            f"anchor_scale_max={args.interaction_anchor_scale_max}, "
+            f"anchor_scale_init={args.interaction_anchor_scale_init}, "
+            f"anchor_bias_clip={args.interaction_anchor_bias_clip}, "
+            f"anchor_source={args.pmr_anchor_source}"
+        )
     print_log(save_path, f"PMR: {'ENABLED' if args.use_pairwise_refiner else 'DISABLED'}")
     if args.use_pairwise_refiner:
         print_log(
@@ -647,7 +726,7 @@ def train(train_loader, model, criterion, optimizer, epoch):
         object_scores = None
         object_token_id = None
         object_family_id = None
-        if args.use_olic and 'object_boxes_xyxy' in targets[0]:
+        if (args.use_olic or args.use_interaction_stir) and 'object_boxes_xyxy' in targets[0]:
             object_boxes_xyxy = torch.stack([t['object_boxes_xyxy'] for t in targets])
             object_valid_mask = torch.stack([t['object_valid_mask'] for t in targets])
             object_scores = torch.stack([t['object_scores'] for t in targets])
@@ -733,6 +812,20 @@ def train(train_loader, model, criterion, optimizer, epoch):
                     olic_res_actor=float(module_ref.olic_actor_res_scale.detach().item()),
                     olic_res_group=float(module_ref.olic_group_res_scale.detach().item()),
                 )
+        if args.use_interaction_stir and 'interaction_anchor_bias_mean' in outputs:
+            metric_logger.update(
+                interaction_anchor_bias_mean=float(outputs['interaction_anchor_bias_mean'].mean().item()),
+                interaction_anchor_bias_abs_mean=float(outputs['interaction_anchor_bias_abs_mean'].mean().item()),
+                interaction_anchor_bias_max=float(outputs['interaction_anchor_bias_max'].mean().item()),
+                interaction_anchor_bias_min=float(outputs['interaction_anchor_bias_min'].mean().item()),
+                interaction_anchor_bias_pos_ratio=float(outputs['interaction_anchor_bias_pos_ratio'].mean().item()),
+                interaction_anchor_bias_neg_ratio=float(outputs['interaction_anchor_bias_neg_ratio'].mean().item()),
+                interaction_anchor_shared_table_mean=float(outputs['interaction_anchor_shared_table_mean'].mean().item()),
+                interaction_anchor_shared_service_mean=float(outputs['interaction_anchor_shared_service_mean'].mean().item()),
+                interaction_anchor_scale_mean=float(outputs['interaction_anchor_scale_mean'].mean().item()),
+                interaction_anchor_top1_mean=float(outputs['interaction_anchor_top1_mean'].mean().item()),
+                interaction_anchor_valid_per_actor=float(outputs['interaction_anchor_valid_per_actor'].mean().item()),
+            )
         if args.use_pairwise_refiner and 'pairwise_refine_delta_mean' in outputs:
             metric_logger.update(
                 pairwise_refine_delta_mean=float(outputs['pairwise_refine_delta_mean'].mean().item()),
@@ -786,7 +879,7 @@ def validate(test_loader, model, criterion, metrics, epoch):
         object_scores = None
         object_token_id = None
         object_family_id = None
-        if args.use_olic and 'object_boxes_xyxy' in targets[0]:
+        if (args.use_olic or args.use_interaction_stir) and 'object_boxes_xyxy' in targets[0]:
             object_boxes_xyxy = torch.stack([t['object_boxes_xyxy'] for t in targets])
             object_valid_mask = torch.stack([t['object_valid_mask'] for t in targets])
             object_scores = torch.stack([t['object_scores'] for t in targets])
@@ -849,6 +942,20 @@ def validate(test_loader, model, criterion, metrics, epoch):
                     olic_res_actor=float(module_ref.olic_actor_res_scale.detach().item()),
                     olic_res_group=float(module_ref.olic_group_res_scale.detach().item()),
                 )
+        if args.use_interaction_stir and 'interaction_anchor_bias_mean' in outputs:
+            metric_logger.update(
+                interaction_anchor_bias_mean=float(outputs['interaction_anchor_bias_mean'].mean().item()),
+                interaction_anchor_bias_abs_mean=float(outputs['interaction_anchor_bias_abs_mean'].mean().item()),
+                interaction_anchor_bias_max=float(outputs['interaction_anchor_bias_max'].mean().item()),
+                interaction_anchor_bias_min=float(outputs['interaction_anchor_bias_min'].mean().item()),
+                interaction_anchor_bias_pos_ratio=float(outputs['interaction_anchor_bias_pos_ratio'].mean().item()),
+                interaction_anchor_bias_neg_ratio=float(outputs['interaction_anchor_bias_neg_ratio'].mean().item()),
+                interaction_anchor_shared_table_mean=float(outputs['interaction_anchor_shared_table_mean'].mean().item()),
+                interaction_anchor_shared_service_mean=float(outputs['interaction_anchor_shared_service_mean'].mean().item()),
+                interaction_anchor_scale_mean=float(outputs['interaction_anchor_scale_mean'].mean().item()),
+                interaction_anchor_top1_mean=float(outputs['interaction_anchor_top1_mean'].mean().item()),
+                interaction_anchor_valid_per_actor=float(outputs['interaction_anchor_valid_per_actor'].mean().item()),
+            )
         if args.use_pairwise_refiner and 'pairwise_refine_delta_mean' in outputs:
             metric_logger.update(
                 pairwise_refine_delta_mean=float(outputs['pairwise_refine_delta_mean'].mean().item()),

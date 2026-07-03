@@ -49,7 +49,10 @@ class SetCriterion(nn.Module):
 
         # option
         self.temperature = args.temperature
-        self.use_pairwise_refiner = bool(getattr(args, 'use_pairwise_refiner', True))
+        pairwise_refiner_arg = getattr(args, 'use_pairwise_refiner', None)
+        if pairwise_refiner_arg is None:
+            pairwise_refiner_arg = not bool(getattr(args, 'use_interaction_stir', False))
+        self.use_pairwise_refiner = bool(pairwise_refiner_arg)
 
     #######################################################################################################################
     # * Individual Losses

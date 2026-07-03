@@ -152,6 +152,7 @@ class CafeDataset(data.Dataset):
         self.image_size = (args.image_width, args.image_height)
         self.num_boxes = args.num_boxes
         self.use_olic = bool(getattr(args, 'use_olic', False))
+        self.use_object_context = self.use_olic or bool(getattr(args, 'use_interaction_stir', False))
         self.num_object_boxes = int(getattr(args, 'num_object_boxes', 10))
         self.random_sampling = args.random_sampling
         self.num_frame = args.num_frame
@@ -336,7 +337,7 @@ class CafeDataset(data.Dataset):
             if len(membership) != self.num_boxes:
                 membership[-1] = torch.cat((membership[-1], torch.tensor((self.num_boxes - len(membership[-1])) * [-1])))
 
-            if self.use_olic:
+            if self.use_object_context:
                 obj_boxes, obj_valid, obj_score, obj_token, obj_family = self._parse_object_rows(
                     vid=vid, cid=cid, fid=fid
                 )
@@ -369,7 +370,7 @@ class CafeDataset(data.Dataset):
         targets['members'] = members
         targets['membership'] = membership
 
-        if self.use_olic:
+        if self.use_object_context:
             targets['object_boxes_xyxy'] = torch.from_numpy(
                 np.stack(object_boxes_xyxy, axis=0).astype(np.float32)
             )

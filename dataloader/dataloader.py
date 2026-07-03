@@ -137,15 +137,23 @@ def read_dataset(args):
                 f"Neither track pkl nor json exists. Checked pkl: {tracks_pkl_path}, json: {tracks_json_path}"
             )
 
-        use_olic = bool(getattr(args, 'use_olic', False))
+        use_object_context = bool(getattr(args, 'use_olic', False)) or bool(getattr(args, 'use_interaction_stir', False))
         object_tracks = None
-        if use_olic:
+        if use_object_context:
             object_tracks_pkl = getattr(args, 'object_tracks_pkl', '')
             if not object_tracks_pkl:
-                object_tracks_pkl = os.path.join(data_path, 'object_tracks_gdino_swinb_localmix_membership.pkl')
+                if bool(getattr(args, 'use_interaction_stir', False)):
+                    tablemerge_pkl = os.path.join(
+                        data_path, 'object_tracks_gdino_swinb_localmix_membership_tablemerge.pkl'
+                    )
+                    fallback_pkl = os.path.join(data_path, 'object_tracks_gdino_swinb_localmix_membership.pkl')
+                    object_tracks_pkl = tablemerge_pkl if os.path.exists(tablemerge_pkl) else fallback_pkl
+                else:
+                    object_tracks_pkl = os.path.join(data_path, 'object_tracks_gdino_swinb_localmix_membership.pkl')
+                setattr(args, 'object_tracks_pkl', object_tracks_pkl)
             if not os.path.exists(object_tracks_pkl):
                 raise FileNotFoundError(
-                    f"use_olic=True but object track pkl not found: {object_tracks_pkl}"
+                    f"object context requested but object track pkl not found: {object_tracks_pkl}"
                 )
             print(f"    Loading object tracks from: {object_tracks_pkl}")
             object_tracks = _load_pickle_compat(object_tracks_pkl)

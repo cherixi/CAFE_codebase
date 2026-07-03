@@ -91,7 +91,7 @@ def build_parser():
                             help='enable OLIC object-conditioned branch')
     olic_group.add_argument('--no_olic', dest='use_olic', action='store_false',
                             help='disable OLIC object-conditioned branch')
-    parser.set_defaults(use_olic=True)
+    parser.set_defaults(use_olic=None)
     group_olic_group = parser.add_mutually_exclusive_group()
     group_olic_group.add_argument('--disable_group_olic', dest='disable_group_olic', action='store_true',
                                   help='disable group-side OLIC fusion and keep actor-side OLIC only')
@@ -99,7 +99,7 @@ def build_parser():
                                   help='enable group-side OLIC fusion')
     parser.set_defaults(disable_group_olic=True)
     parser.add_argument('--object_tracks_pkl', default='', type=str,
-                        help='path to object track pkl; default: <data_path>/cafe/object_tracks_gdino_swinb_localmix_membership.pkl')
+                        help='path to object track pkl; default: IA-STIR prefers <data_path>/cafe/object_tracks_gdino_swinb_localmix_membership_tablemerge.pkl if present, otherwise <data_path>/cafe/object_tracks_gdino_swinb_localmix_membership.pkl')
     parser.add_argument('--num_object_boxes', default=20, type=int, help='fixed number of object boxes per frame')
     parser.add_argument('--olic_topk_obj', default=6, type=int,
                         help='(deprecated) top-k objects per actor for relevance pruning; pruning is disabled in current stable path')
@@ -132,12 +132,41 @@ def build_parser():
                         help='initial scale for geometry bias term in OLIC routing')
     parser.add_argument('--olic_geom_scale_max', default=2.0, type=float,
                         help='maximum geometry scale for OLIC routing')
+
+    interaction_group = parser.add_mutually_exclusive_group()
+    interaction_group.add_argument('--use_interaction_stir', dest='use_interaction_stir', action='store_true',
+                                   help='replace FrameHOIGraph with anchor-aware FrameInteractionGraph')
+    interaction_group.add_argument('--no_interaction_stir', dest='use_interaction_stir', action='store_false',
+                                   help='use the original actor-only FrameHOIGraph')
+    parser.set_defaults(use_interaction_stir=False)
+    parser.add_argument('--interaction_stage', default='anchor_only', type=str,
+                        choices=['anchor_only', 'anchor_small_msg', 'full'],
+                        help='IA-STIR stage; v1 implements anchor_only')
+    anchor_interaction_group = parser.add_mutually_exclusive_group()
+    anchor_interaction_group.add_argument('--interaction_use_anchors', dest='interaction_use_anchors', action='store_true',
+                                          help='use table/service anchors to modulate actor-actor graph edges')
+    anchor_interaction_group.add_argument('--no_interaction_use_anchors', dest='interaction_use_anchors', action='store_false',
+                                          help='disable anchor edge modulation')
+    parser.set_defaults(interaction_use_anchors=True)
+    small_interaction_group = parser.add_mutually_exclusive_group()
+    small_interaction_group.add_argument('--interaction_use_small_objects', dest='interaction_use_small_objects', action='store_true',
+                                         help='reserved for weak small-object actor messages in later IA-STIR stages')
+    small_interaction_group.add_argument('--no_interaction_use_small_objects', dest='interaction_use_small_objects', action='store_false',
+                                         help='disable small-object messages in IA-STIR')
+    parser.set_defaults(interaction_use_small_objects=False)
+    parser.add_argument('--interaction_anchor_scale_max', default=0.5, type=float,
+                        help='maximum IA-STIR anchor edge-bias scale')
+    parser.add_argument('--interaction_anchor_scale_init', default=-6.0, type=float,
+                        help='initial logit for IA-STIR anchor edge-bias scale')
+    parser.add_argument('--interaction_anchor_bias_clip', default=2.0, type=float,
+                        help='clip value for IA-STIR anchor edge bias before applying the learned scale')
+
     pairwise_group = parser.add_mutually_exclusive_group()
     pairwise_group.add_argument('--use_pairwise_refiner', dest='use_pairwise_refiner', action='store_true',
                                 help='enable pairwise membership refiner')
     pairwise_group.add_argument('--no_pairwise_refiner', dest='use_pairwise_refiner', action='store_false',
                                 help='disable pairwise membership refiner')
-    parser.set_defaults(use_pairwise_refiner=True)
+    parser.set_defaults(use_pairwise_refiner=None)
     objrel_group = parser.add_mutually_exclusive_group()
     objrel_group.add_argument('--pairwise_use_object_relation', dest='pairwise_use_object_relation', action='store_true',
                               help='use actor-side object summaries in pairwise affinity')
@@ -297,6 +326,20 @@ def main(argv=None):
     print(f"Output path: {output_dir}")
     print(f"Dataset: {args.dataset}, Split: {args.split}")
     print(f"Model path: {args.model_path}")
+    print(f"OLIC: {'ENABLED' if args.use_olic else 'DISABLED'}")
+    print(f"PMR: {'ENABLED' if args.use_pairwise_refiner else 'DISABLED'}")
+    print(f"IA-STIR: {'ENABLED' if args.use_interaction_stir else 'DISABLED'}")
+    if args.use_interaction_stir:
+        print(
+            "IA-STIR cfg: "
+            f"stage={args.interaction_stage}, "
+            f"use_anchors={int(args.interaction_use_anchors)}, "
+            f"use_small_objects={int(args.interaction_use_small_objects)}, "
+            f"anchor_scale_max={args.interaction_anchor_scale_max}, "
+            f"anchor_scale_init={args.interaction_anchor_scale_init}, "
+            f"anchor_bias_clip={args.interaction_anchor_bias_clip}, "
+            f"anchor_source={args.pmr_anchor_source}"
+        )
     print("=" * 60)
 
     print("\n[1/6] Setting random seed...")

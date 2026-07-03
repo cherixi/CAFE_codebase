@@ -20,10 +20,6 @@ SEQS_CAFE = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12,
 
 
 def resolve_eval_args(args):
-    if getattr(args, "pmr_anchor_source", "auto") == "auto":
-        object_source_hint = str(getattr(args, "object_tracks_pkl", "") or "").lower()
-        args.pmr_anchor_source = "yolo" if "yolo" in object_source_hint else "gdino"
-
     if getattr(args, "no_mae", False):
         args.mae_fusion = "none"
     args.use_mae = (not getattr(args, "no_mae", False)) and getattr(args, "mae_fusion", "none") != "none"
@@ -31,8 +27,57 @@ def resolve_eval_args(args):
     if not args.use_mae:
         args.mae_dim = 0
 
+    if not hasattr(args, "use_olic") or args.use_olic is None:
+        args.use_olic = not getattr(args, "use_interaction_stir", False)
+    if not hasattr(args, "use_pairwise_refiner") or args.use_pairwise_refiner is None:
+        args.use_pairwise_refiner = not getattr(args, "use_interaction_stir", False)
+    if (args.use_olic or args.use_interaction_stir) and not getattr(args, "object_tracks_pkl", ""):
+        object_data_path = os.path.join(args.data_path, args.dataset)
+        if args.use_interaction_stir:
+            tablemerge_pkl = os.path.join(
+                object_data_path, "object_tracks_gdino_swinb_localmix_membership_tablemerge.pkl"
+            )
+            fallback_pkl = os.path.join(object_data_path, "object_tracks_gdino_swinb_localmix_membership.pkl")
+            args.object_tracks_pkl = tablemerge_pkl if os.path.exists(tablemerge_pkl) else fallback_pkl
+        else:
+            args.object_tracks_pkl = os.path.join(
+                object_data_path, "object_tracks_gdino_swinb_localmix_membership.pkl"
+            )
+    if getattr(args, "pmr_anchor_source", "auto") == "auto":
+        object_source_hint = str(getattr(args, "object_tracks_pkl", "") or "").lower()
+        args.pmr_anchor_source = "yolo" if "yolo" in object_source_hint else "gdino"
+
     if getattr(args, "olic_dropout", -1.0) < 0:
         args.olic_dropout = args.drop_rate
+    if not hasattr(args, "use_interaction_stir"):
+        args.use_interaction_stir = False
+    if not hasattr(args, "interaction_stage"):
+        args.interaction_stage = "anchor_only"
+    if not hasattr(args, "interaction_use_anchors"):
+        args.interaction_use_anchors = True
+    if not hasattr(args, "interaction_use_small_objects"):
+        args.interaction_use_small_objects = False
+    if not hasattr(args, "interaction_anchor_scale_max"):
+        args.interaction_anchor_scale_max = 0.5
+    if not hasattr(args, "interaction_anchor_scale_init"):
+        args.interaction_anchor_scale_init = -6.0
+    if not hasattr(args, "interaction_anchor_bias_clip"):
+        args.interaction_anchor_bias_clip = 2.0
+    if args.interaction_anchor_scale_max <= 0:
+        args.interaction_anchor_scale_max = 0.5
+    if args.interaction_anchor_bias_clip <= 0:
+        args.interaction_anchor_bias_clip = 2.0
+    if args.use_interaction_stir:
+        if getattr(args, "hoi_mode", "penalty") == "none":
+            raise ValueError("IA-STIR requires --hoi_mode bias, hard_mask, or penalty; got --hoi_mode none.")
+        if args.interaction_stage != "anchor_only":
+            raise NotImplementedError(
+                "IA-STIR v1 currently implements only --interaction_stage anchor_only."
+            )
+        if args.interaction_use_small_objects:
+            raise NotImplementedError(
+                "IA-STIR v1 intentionally keeps small-object messages disabled."
+            )
 
     return args
 
@@ -127,6 +172,20 @@ def update_metric_logger(metric_logger, loss_dict_reduced, weight_dict, outputs,
                 pair_neg_mean=float(loss_dict_reduced["pair_neg_mean"].item()),
                 pair_gap=float(loss_dict_reduced["pair_gap"].item()),
             )
+    if getattr(args, "use_interaction_stir", False) and "interaction_anchor_bias_mean" in outputs:
+        metric_logger.update(
+            interaction_anchor_bias_mean=float(outputs["interaction_anchor_bias_mean"].mean().item()),
+            interaction_anchor_bias_abs_mean=float(outputs["interaction_anchor_bias_abs_mean"].mean().item()),
+            interaction_anchor_bias_max=float(outputs["interaction_anchor_bias_max"].mean().item()),
+            interaction_anchor_bias_min=float(outputs["interaction_anchor_bias_min"].mean().item()),
+            interaction_anchor_bias_pos_ratio=float(outputs["interaction_anchor_bias_pos_ratio"].mean().item()),
+            interaction_anchor_bias_neg_ratio=float(outputs["interaction_anchor_bias_neg_ratio"].mean().item()),
+            interaction_anchor_shared_table_mean=float(outputs["interaction_anchor_shared_table_mean"].mean().item()),
+            interaction_anchor_shared_service_mean=float(outputs["interaction_anchor_shared_service_mean"].mean().item()),
+            interaction_anchor_scale_mean=float(outputs["interaction_anchor_scale_mean"].mean().item()),
+            interaction_anchor_top1_mean=float(outputs["interaction_anchor_top1_mean"].mean().item()),
+            interaction_anchor_valid_per_actor=float(outputs["interaction_anchor_valid_per_actor"].mean().item()),
+        )
     if args.use_olic and "small_valid_obj_per_actor" in outputs:
         metric_logger.update(
             small_valid_obj_per_actor=float(outputs["small_valid_obj_per_actor"].mean().item()),
@@ -154,7 +213,7 @@ def run_eval_batch(model, criterion, images, targets, infos, args):
     object_scores = None
     object_token_id = None
     object_family_id = None
-    if args.use_olic and "object_boxes_xyxy" in targets[0]:
+    if (args.use_olic or getattr(args, "use_interaction_stir", False)) and "object_boxes_xyxy" in targets[0]:
         object_boxes_xyxy = torch.stack([t["object_boxes_xyxy"] for t in targets])
         object_valid_mask = torch.stack([t["object_valid_mask"] for t in targets])
         object_scores = torch.stack([t["object_scores"] for t in targets])
