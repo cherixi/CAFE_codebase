@@ -50,6 +50,9 @@ class SetCriterion(nn.Module):
         # option
         self.temperature = args.temperature
         self.use_pairwise_refiner = bool(getattr(args, 'use_pairwise_refiner', True))
+        self.label_smoothing = float(getattr(args, 'label_smoothing', 0.0))
+        if not 0.0 <= self.label_smoothing < 1.0:
+            raise ValueError("label_smoothing must be in [0, 1)")
 
     #######################################################################################################################
     # * Individual Losses
@@ -70,7 +73,12 @@ class SetCriterion(nn.Module):
             non_dummy_idx = dummy_idx.nonzero(as_tuple=True)
             src_logit = src_logits[batch_idx][non_dummy_idx].unsqueeze(0)
             target_class = target_classes[batch_idx][non_dummy_idx].unsqueeze(0)
-            loss_ce += F.cross_entropy(src_logit.transpose(1, 2), target_class, self.empty_weight)
+            loss_ce += F.cross_entropy(
+                src_logit.transpose(1, 2),
+                target_class,
+                self.empty_weight,
+                label_smoothing=self.label_smoothing,
+            )
 
             if src_logits_log is None:
                 src_logits_log = src_logit.squeeze(0)
@@ -115,7 +123,12 @@ class SetCriterion(nn.Module):
                                     device=src_logits.device)
         target_classes[idx] = target_classes_o
 
-        loss_ce = F.cross_entropy(src_logits.transpose(1, 2), target_classes, self.empty_group_weight)
+        loss_ce = F.cross_entropy(
+            src_logits.transpose(1, 2),
+            target_classes,
+            self.empty_group_weight,
+            label_smoothing=self.label_smoothing,
+        )
         losses = {'loss_group_ce': loss_ce}
 
         if log:

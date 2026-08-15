@@ -77,6 +77,16 @@ parser.add_argument('--temporal_agg_mode', default='learned_pool', type=str,
 parser.add_argument('--temporal_layers', default=3, type=int, help='number of temporal attention layers')
 parser.add_argument('--tcn_kernel_size', default=3, type=int, help='kernel size for TCN')
 parser.add_argument('--tcn_dropout', default=0.1, type=float, help='dropout for TCN')
+sdtp_group = parser.add_mutually_exclusive_group()
+sdtp_group.add_argument('--use_sdtp', dest='use_sdtp', action='store_true',
+                        help='enable static-dynamic temporal decomposition pooling')
+sdtp_group.add_argument('--no_sdtp', dest='use_sdtp', action='store_false',
+                        help='use the original learned temporal pooling')
+parser.set_defaults(use_sdtp=False)
+parser.add_argument('--sdtp_hidden_dim', default=64, type=int)
+parser.add_argument('--sdtp_dropout', default=-1.0, type=float)
+parser.add_argument('--sdtp_dynamic_scale_init', default=0.1, type=float)
+parser.add_argument('--sdtp_dynamic_scale_max', default=0.5, type=float)
 
 # OLIC (Object-Conditioned Local Interaction Conditioner)
 olic_group = parser.add_mutually_exclusive_group()
@@ -181,6 +191,8 @@ parser.add_argument('--box_noise_max_size', default=1.0, type=float,
 
 # Loss option
 parser.add_argument('--temperature', default=0.2, type=float, help='consistency loss temperature')
+parser.add_argument('--label_smoothing', default=0.0, type=float,
+                    help='label smoothing for actor and group activity cross entropy')
 
 # Loss coefficients (Individual)
 parser.add_argument('--ce_loss_coef', default=1, type=float)
@@ -264,6 +276,10 @@ def main():
 
     if args.olic_dropout < 0:
         args.olic_dropout = args.drop_rate
+    if args.sdtp_dropout < 0:
+        args.sdtp_dropout = args.drop_rate
+    if args.use_sdtp and args.temporal_agg_mode != 'learned_pool':
+        raise ValueError("SDTP requires --temporal_agg_mode learned_pool")
 
     # set random seed
     print("\n[1/6] Setting random seed...")

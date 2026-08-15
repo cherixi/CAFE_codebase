@@ -8,7 +8,7 @@ from torchvision.ops import RoIAlign
 from .backbone import build_backbone
 from .group_transformer import build_group_transformer
 from .feed_forward import MLP
-from .hoi_graph import FrameHOIGraph, TemporalEncoder
+from .hoi_graph import FrameHOIGraph, StaticDynamicTemporalPool, TemporalEncoder
 from .videomae_adapter import VideoMAEAdapter
 
 
@@ -78,6 +78,26 @@ class GADTR(nn.Module):
         self.actor_time_pool = nn.Linear(self.hidden_dim, 1)
         self.group_time_pool = nn.Linear(self.hidden_dim, 1)
         self.temporal_agg_mode = getattr(args, 'temporal_agg_mode', 'learned_pool')
+        self.use_sdtp = bool(getattr(args, 'use_sdtp', False))
+        if self.use_sdtp:
+            sdtp_hidden_dim = int(getattr(args, 'sdtp_hidden_dim', 64))
+            sdtp_dropout = float(getattr(args, 'sdtp_dropout', args.drop_rate))
+            sdtp_scale_init = float(getattr(args, 'sdtp_dynamic_scale_init', 0.1))
+            sdtp_scale_max = float(getattr(args, 'sdtp_dynamic_scale_max', 0.5))
+            self.actor_sdtp = StaticDynamicTemporalPool(
+                self.hidden_dim,
+                hidden_dim=sdtp_hidden_dim,
+                dropout=sdtp_dropout,
+                dynamic_scale_init=sdtp_scale_init,
+                dynamic_scale_max=sdtp_scale_max,
+            )
+            self.group_sdtp = StaticDynamicTemporalPool(
+                self.hidden_dim,
+                hidden_dim=sdtp_hidden_dim,
+                dropout=sdtp_dropout,
+                dynamic_scale_init=sdtp_scale_init,
+                dynamic_scale_max=sdtp_scale_max,
+            )
         
         # Distance mask threshold (kept for backward compatibility)
         self.distance_threshold = getattr(args, 'distance_threshold', None)
@@ -774,6 +794,19 @@ class GADTR(nn.Module):
                 "olic_geom_scale": actor_hs.new_tensor(0.0),
             }
 
+        sdtp_diag = {
+            "actor_gate_mean": actor_hs.new_tensor(0.0),
+            "group_gate_mean": actor_hs.new_tensor(0.0),
+            "actor_dynamic_scale": actor_hs.new_tensor(0.0),
+            "group_dynamic_scale": actor_hs.new_tensor(0.0),
+            "actor_dynamic_ratio": actor_hs.new_tensor(0.0),
+            "group_dynamic_ratio": actor_hs.new_tensor(0.0),
+            "actor_static_entropy": actor_hs.new_tensor(0.0),
+            "group_static_entropy": actor_hs.new_tensor(0.0),
+            "actor_dynamic_entropy": actor_hs.new_tensor(0.0),
+            "group_dynamic_entropy": actor_hs.new_tensor(0.0),
+        }
+
         if self.temporal_agg_mode == 'frame_mean_main':
             # Main-branch style ablation:
             # 1) actor/group clip tokens are simple frame means
@@ -788,16 +821,28 @@ class GADTR(nn.Module):
             time_pos = self.time_pos_emb.weight[:t].unsqueeze(0)                                         # [1, t, c]
             temporal_actor_out, _ = self.temporal_encoder(temporal_actor_in, pos=time_pos)
 
-            actor_time_logits = self.actor_time_pool(temporal_actor_out).squeeze(-1)                     # [b*n, t]
-            actor_time_weight = torch.softmax(actor_time_logits, dim=1).unsqueeze(-1)                    # [b*n, t, 1]
-            actor_clip = (temporal_actor_out * actor_time_weight).sum(dim=1).reshape(bs, n, self.hidden_dim)
+            if self.use_sdtp:
+                actor_clip_flat, actor_sdtp_diag = self.actor_sdtp(temporal_actor_out)
+                actor_clip = actor_clip_flat.reshape(bs, n, self.hidden_dim)
+                for key, value in actor_sdtp_diag.items():
+                    sdtp_diag[f"actor_{key}"] = value
+            else:
+                actor_time_logits = self.actor_time_pool(temporal_actor_out).squeeze(-1)                 # [b*n, t]
+                actor_time_weight = torch.softmax(actor_time_logits, dim=1).unsqueeze(-1)                # [b*n, t, 1]
+                actor_clip = (temporal_actor_out * actor_time_weight).sum(dim=1).reshape(bs, n, self.hidden_dim)
 
             # temporal modeling for group tokens
             temporal_group_in = group_hs.permute(0, 2, 1, 3).reshape(bs * self.num_group_tokens, t, self.hidden_dim)
             temporal_group_out, _ = self.temporal_encoder(temporal_group_in, pos=time_pos)
-            group_time_logits = self.group_time_pool(temporal_group_out).squeeze(-1)                      # [b*k, t]
-            group_time_weight = torch.softmax(group_time_logits, dim=1).unsqueeze(-1)                     # [b*k, t, 1]
-            group_clip = (temporal_group_out * group_time_weight).sum(dim=1).reshape(bs, self.num_group_tokens, self.hidden_dim)
+            if self.use_sdtp:
+                group_clip_flat, group_sdtp_diag = self.group_sdtp(temporal_group_out)
+                group_clip = group_clip_flat.reshape(bs, self.num_group_tokens, self.hidden_dim)
+                for key, value in group_sdtp_diag.items():
+                    sdtp_diag[f"group_{key}"] = value
+            else:
+                group_time_logits = self.group_time_pool(temporal_group_out).squeeze(-1)                  # [b*k, t]
+                group_time_weight = torch.softmax(group_time_logits, dim=1).unsqueeze(-1)                 # [b*k, t, 1]
+                group_clip = (temporal_group_out * group_time_weight).sum(dim=1).reshape(bs, self.num_group_tokens, self.hidden_dim)
 
             # prediction heads (clip-level)
             outputs_class = self.class_emb(actor_clip)               # [b, n, num_class+1]
@@ -847,6 +892,17 @@ class GADTR(nn.Module):
             "pairwise_valid_mask": pairwise_out["pairwise_valid_mask"],
             "pairwise_refine_delta_mean": pairwise_out["pairwise_refine_delta_mean"].detach(),
             "membership_entropy": pairwise_out["membership_entropy"].detach(),
+            "sdtp_enabled": inst_repr.new_tensor(1.0 if self.use_sdtp else 0.0),
+            "sdtp_actor_gate_mean": sdtp_diag["actor_gate_mean"],
+            "sdtp_group_gate_mean": sdtp_diag["group_gate_mean"],
+            "sdtp_actor_dynamic_scale": sdtp_diag["actor_dynamic_scale"],
+            "sdtp_group_dynamic_scale": sdtp_diag["group_dynamic_scale"],
+            "sdtp_actor_dynamic_ratio": sdtp_diag["actor_dynamic_ratio"],
+            "sdtp_group_dynamic_ratio": sdtp_diag["group_dynamic_ratio"],
+            "sdtp_actor_static_entropy": sdtp_diag["actor_static_entropy"],
+            "sdtp_group_static_entropy": sdtp_diag["group_static_entropy"],
+            "sdtp_actor_dynamic_entropy": sdtp_diag["actor_dynamic_entropy"],
+            "sdtp_group_dynamic_entropy": sdtp_diag["group_dynamic_entropy"],
             "group_olic_disabled": inst_repr.new_tensor(1.0 if self.disable_group_olic else 0.0),
             "olic_alpha_mean": olic_alpha_mean.detach(),
             "olic_beta_mean": olic_beta_mean.detach(),

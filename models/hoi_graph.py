@@ -210,3 +210,106 @@ class TemporalEncoder(nn.Module):
             x, attn = layer(x, pos, key_padding_mask)
 
         return x, attn
+
+
+class StaticDynamicTemporalPool(nn.Module):
+    """Pool temporal tokens through appearance and first-order dynamics."""
+
+    def __init__(
+        self,
+        d_model=256,
+        hidden_dim=64,
+        dropout=0.1,
+        dynamic_scale_init=0.1,
+        dynamic_scale_max=0.5,
+    ):
+        super().__init__()
+        if dynamic_scale_max <= 0.0:
+            raise ValueError("dynamic_scale_max must be positive")
+        if not 0.0 < dynamic_scale_init < dynamic_scale_max:
+            raise ValueError("dynamic_scale_init must be in (0, dynamic_scale_max)")
+
+        self.dynamic_scale_max = float(dynamic_scale_max)
+        init_ratio = float(dynamic_scale_init) / self.dynamic_scale_max
+        init_logit = math.log(init_ratio / (1.0 - init_ratio))
+        self.dynamic_scale_logit = nn.Parameter(torch.tensor(init_logit, dtype=torch.float32))
+
+        self.static_score = nn.Linear(d_model, 1)
+        self.dynamic_norm = nn.LayerNorm(d_model)
+        self.dynamic_proj = nn.Sequential(
+            nn.Linear(d_model, d_model),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(d_model, d_model),
+        )
+        self.dynamic_score = nn.Sequential(
+            nn.Linear(2 * d_model, hidden_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, 1),
+        )
+        self.fusion_gate = nn.Sequential(
+            nn.Linear(2 * d_model, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, 1),
+        )
+        for module in self.dynamic_proj.modules():
+            if isinstance(module, nn.Linear) and module.bias is not None:
+                nn.init.zeros_(module.bias)
+
+    @staticmethod
+    def _masked_softmax(logits, valid_mask):
+        logits = logits.masked_fill(~valid_mask, float("-inf"))
+        weights = torch.softmax(logits, dim=1)
+        return torch.nan_to_num(weights, nan=0.0)
+
+    def forward(self, x, key_padding_mask=None):
+        """
+        Args:
+            x: Temporal tokens with shape [B, T, D].
+            key_padding_mask: Optional [B, T] mask, where True denotes padding.
+        """
+        if x.dim() != 3:
+            raise ValueError(f"Expected [B, T, D] input, got {tuple(x.shape)}")
+
+        batch_size, num_frames, _ = x.shape
+        if key_padding_mask is None:
+            valid_mask = torch.ones(batch_size, num_frames, dtype=torch.bool, device=x.device)
+        else:
+            valid_mask = ~key_padding_mask.bool()
+
+        static_logits = self.static_score(x).squeeze(-1)
+        static_weight = self._masked_softmax(static_logits, valid_mask)
+        static_clip = torch.sum(x * static_weight.unsqueeze(-1), dim=1)
+
+        delta = torch.zeros_like(x)
+        if num_frames > 1:
+            delta[:, 1:] = x[:, 1:] - x[:, :-1]
+        dynamic_tokens = self.dynamic_proj(self.dynamic_norm(delta))
+        dynamic_logits = self.dynamic_score(torch.cat([x, delta.abs()], dim=-1)).squeeze(-1)
+
+        dynamic_valid = valid_mask.clone()
+        if num_frames > 1:
+            dynamic_valid[:, 0] = False
+        else:
+            dynamic_valid.zero_()
+        dynamic_weight = self._masked_softmax(dynamic_logits, dynamic_valid)
+        dynamic_clip = torch.sum(dynamic_tokens * dynamic_weight.unsqueeze(-1), dim=1)
+
+        gate = torch.sigmoid(self.fusion_gate(torch.cat([static_clip, dynamic_clip], dim=-1)))
+        dynamic_scale = self.dynamic_scale_max * torch.sigmoid(self.dynamic_scale_logit)
+        dynamic_residual = dynamic_scale * gate * dynamic_clip
+        clip = static_clip + dynamic_residual
+
+        eps = torch.finfo(x.dtype).eps if x.dtype.is_floating_point else 1e-6
+        dynamic_ratio = dynamic_residual.norm(dim=-1) / static_clip.norm(dim=-1).clamp_min(eps)
+        static_entropy = -(static_weight * static_weight.clamp_min(eps).log()).sum(dim=1)
+        dynamic_entropy = -(dynamic_weight * dynamic_weight.clamp_min(eps).log()).sum(dim=1)
+        diagnostics = {
+            "gate_mean": gate.mean().detach(),
+            "dynamic_scale": dynamic_scale.detach(),
+            "dynamic_ratio": dynamic_ratio.mean().detach(),
+            "static_entropy": static_entropy.mean().detach(),
+            "dynamic_entropy": dynamic_entropy.mean().detach(),
+        }
+        return clip, diagnostics

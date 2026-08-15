@@ -83,6 +83,20 @@ parser.add_argument('--hoi_hard_thresh', default=None, type=float,
 parser.add_argument('--temporal_layers', default=3, type=int, help='number of temporal attention layers')
 parser.add_argument('--tcn_kernel_size', default=3, type=int, help='kernel size for TCN')
 parser.add_argument('--tcn_dropout', default=0.1, type=float, help='dropout for TCN')
+sdtp_group = parser.add_mutually_exclusive_group()
+sdtp_group.add_argument('--use_sdtp', dest='use_sdtp', action='store_true',
+                        help='enable static-dynamic temporal decomposition pooling')
+sdtp_group.add_argument('--no_sdtp', dest='use_sdtp', action='store_false',
+                        help='use the original learned temporal pooling')
+parser.set_defaults(use_sdtp=False)
+parser.add_argument('--sdtp_hidden_dim', default=64, type=int,
+                    help='hidden dimension of SDTP score and fusion heads')
+parser.add_argument('--sdtp_dropout', default=-1.0, type=float,
+                    help='dropout in SDTP; <0 means use drop_rate')
+parser.add_argument('--sdtp_dynamic_scale_init', default=0.1, type=float,
+                    help='initial bounded dynamic residual scale')
+parser.add_argument('--sdtp_dynamic_scale_max', default=0.5, type=float,
+                    help='maximum bounded dynamic residual scale')
 parser.add_argument('--temporal_agg_mode', default='learned_pool', type=str,
                     choices=['learned_pool', 'frame_mean_main'],
                     help='temporal aggregation mode: learned pooling (default) or main-style frame mean ablation')
@@ -173,6 +187,8 @@ parser.add_argument('--pairwise_refine_scale', default=0.5, type=float,
 
 # Loss option
 parser.add_argument('--temperature', default=0.2, type=float, help='consistency loss temperature')
+parser.add_argument('--label_smoothing', default=0.0, type=float,
+                    help='label smoothing for actor and group activity cross entropy')
 
 # Loss coefficients (Individual)
 parser.add_argument('--ce_loss_coef', default=1, type=float)
@@ -290,6 +306,10 @@ def main():
 
     if args.olic_dropout < 0:
         args.olic_dropout = args.drop_rate
+    if args.sdtp_dropout < 0:
+        args.sdtp_dropout = args.drop_rate
+    if args.use_sdtp and args.temporal_agg_mode != 'learned_pool':
+        raise ValueError("SDTP requires --temporal_agg_mode learned_pool")
     if args.olic_warmup_epochs < 0:
         args.olic_warmup_epochs = 0
     if args.olic_attn_tau <= 0:
@@ -327,6 +347,18 @@ def main():
             f"use_small_obj={int(args.pairwise_use_small_object_relation)}, use_anchor={int(args.pairwise_use_anchor_relation)}, "
             f"anchor_source={args.pmr_anchor_source}"
         )
+    print_log(save_path, f"----------------------------------------------------------------")
+    print_log(save_path, f"Frame graph: {args.hoi_mode}")
+    print_log(save_path, f"Temporal pooling: {'SDTP' if args.use_sdtp else args.temporal_agg_mode}")
+    if args.use_sdtp:
+        print_log(
+            save_path,
+            f"SDTP cfg: hidden_dim={args.sdtp_hidden_dim}, dropout={args.sdtp_dropout}, "
+            f"dynamic_scale_init={args.sdtp_dynamic_scale_init}, "
+            f"dynamic_scale_max={args.sdtp_dynamic_scale_max}"
+        )
+    print_log(save_path, f"Label smoothing: {args.label_smoothing}")
+    print_log(save_path, f"----------------------------------------------------------------")
 
     # set random seed
     random.seed(args.random_seed)
@@ -503,6 +535,22 @@ def main():
                     train_log.get('group_olic_disabled', 0.0),
                 )
             )
+        if args.use_sdtp and 'sdtp_actor_gate_mean' in train_log:
+            print_log(
+                save_path,
+                "SDTP(train): gate_a=%.4f gate_g=%.4f scale_a=%.4f scale_g=%.4f "
+                "dyn_ratio_a=%.4f dyn_ratio_g=%.4f static_ent_a=%.4f static_ent_g=%.4f"
+                % (
+                    train_log.get('sdtp_actor_gate_mean', 0.0),
+                    train_log.get('sdtp_group_gate_mean', 0.0),
+                    train_log.get('sdtp_actor_dynamic_scale', 0.0),
+                    train_log.get('sdtp_group_dynamic_scale', 0.0),
+                    train_log.get('sdtp_actor_dynamic_ratio', 0.0),
+                    train_log.get('sdtp_group_dynamic_ratio', 0.0),
+                    train_log.get('sdtp_actor_static_entropy', 0.0),
+                    train_log.get('sdtp_group_static_entropy', 0.0),
+                )
+            )
         print('Current learning rate is %f' % scheduler.get_last_lr()[0])
         scheduler.step()
 
@@ -556,6 +604,22 @@ def main():
                         test_log.get('pairwise_refine_delta_mean', 0.0),
                         test_log.get('membership_entropy', 0.0),
                         test_log.get('group_olic_disabled', 0.0),
+                    )
+                )
+            if args.use_sdtp and 'sdtp_actor_gate_mean' in test_log:
+                print_log(
+                    save_path,
+                    "SDTP(test): gate_a=%.4f gate_g=%.4f scale_a=%.4f scale_g=%.4f "
+                    "dyn_ratio_a=%.4f dyn_ratio_g=%.4f static_ent_a=%.4f static_ent_g=%.4f"
+                    % (
+                        test_log.get('sdtp_actor_gate_mean', 0.0),
+                        test_log.get('sdtp_group_gate_mean', 0.0),
+                        test_log.get('sdtp_actor_dynamic_scale', 0.0),
+                        test_log.get('sdtp_group_dynamic_scale', 0.0),
+                        test_log.get('sdtp_actor_dynamic_ratio', 0.0),
+                        test_log.get('sdtp_group_dynamic_ratio', 0.0),
+                        test_log.get('sdtp_actor_static_entropy', 0.0),
+                        test_log.get('sdtp_group_static_entropy', 0.0),
                     )
                 )
             print_log(save_path, "group mAP at 1.0: %.2f" % result['group_mAP_1.0'])
@@ -745,6 +809,19 @@ def train(train_loader, model, criterion, optimizer, epoch):
                     pair_neg_mean=float(loss_dict_reduced['pair_neg_mean'].item()),
                     pair_gap=float(loss_dict_reduced['pair_gap'].item()),
                 )
+        if args.use_sdtp and 'sdtp_actor_gate_mean' in outputs:
+            metric_logger.update(
+                sdtp_actor_gate_mean=float(outputs['sdtp_actor_gate_mean'].mean().item()),
+                sdtp_group_gate_mean=float(outputs['sdtp_group_gate_mean'].mean().item()),
+                sdtp_actor_dynamic_scale=float(outputs['sdtp_actor_dynamic_scale'].mean().item()),
+                sdtp_group_dynamic_scale=float(outputs['sdtp_group_dynamic_scale'].mean().item()),
+                sdtp_actor_dynamic_ratio=float(outputs['sdtp_actor_dynamic_ratio'].mean().item()),
+                sdtp_group_dynamic_ratio=float(outputs['sdtp_group_dynamic_ratio'].mean().item()),
+                sdtp_actor_static_entropy=float(outputs['sdtp_actor_static_entropy'].mean().item()),
+                sdtp_group_static_entropy=float(outputs['sdtp_group_static_entropy'].mean().item()),
+                sdtp_actor_dynamic_entropy=float(outputs['sdtp_actor_dynamic_entropy'].mean().item()),
+                sdtp_group_dynamic_entropy=float(outputs['sdtp_group_dynamic_entropy'].mean().item()),
+            )
         
         # 显式删除大对象，帮助 GC 回收
         del images, targets, boxes, clean_boxes, outputs, loss, loss_dict
@@ -861,6 +938,19 @@ def validate(test_loader, model, criterion, metrics, epoch):
                     pair_neg_mean=float(loss_dict_reduced['pair_neg_mean'].item()),
                     pair_gap=float(loss_dict_reduced['pair_gap'].item()),
                 )
+        if args.use_sdtp and 'sdtp_actor_gate_mean' in outputs:
+            metric_logger.update(
+                sdtp_actor_gate_mean=float(outputs['sdtp_actor_gate_mean'].mean().item()),
+                sdtp_group_gate_mean=float(outputs['sdtp_group_gate_mean'].mean().item()),
+                sdtp_actor_dynamic_scale=float(outputs['sdtp_actor_dynamic_scale'].mean().item()),
+                sdtp_group_dynamic_scale=float(outputs['sdtp_group_dynamic_scale'].mean().item()),
+                sdtp_actor_dynamic_ratio=float(outputs['sdtp_actor_dynamic_ratio'].mean().item()),
+                sdtp_group_dynamic_ratio=float(outputs['sdtp_group_dynamic_ratio'].mean().item()),
+                sdtp_actor_static_entropy=float(outputs['sdtp_actor_static_entropy'].mean().item()),
+                sdtp_group_static_entropy=float(outputs['sdtp_group_static_entropy'].mean().item()),
+                sdtp_actor_dynamic_entropy=float(outputs['sdtp_actor_dynamic_entropy'].mean().item()),
+                sdtp_group_dynamic_entropy=float(outputs['sdtp_group_dynamic_entropy'].mean().item()),
+            )
 
         # Keep original coordinates for evaluation alignment.
         make_txt(clean_boxes, infos, outputs, name_to_vid, file_path)
