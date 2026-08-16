@@ -76,6 +76,21 @@ VARIANTS = {
         "use_sdtp": True,
         "sdtp_static_control": True,
     },
+    "actor_motion_bias_nome": {
+        "hoi_mode": "bias",
+        "mae_fusion": "none",
+        "label_smoothing": 0.05,
+        "use_sdtp": True,
+        "no_mae": True,
+    },
+    "actor_motion_bias_nome_control": {
+        "hoi_mode": "bias",
+        "mae_fusion": "none",
+        "label_smoothing": 0.05,
+        "use_sdtp": True,
+        "sdtp_static_control": True,
+        "no_mae": True,
+    },
 }
 
 
@@ -84,6 +99,7 @@ def parse_args():
     parser.add_argument("--variant", required=True, choices=sorted(VARIANTS))
     parser.add_argument("--devices", required=True, help="four comma-separated GPU ids")
     parser.add_argument("--tag", default="")
+    parser.add_argument("--random_seed", default=1, type=int)
     parser.add_argument("--repo", type=Path, default=Path(__file__).resolve().parents[1])
     parser.add_argument("--poll_seconds", type=int, default=60)
     parser.add_argument("--dry_run", action="store_true")
@@ -114,7 +130,7 @@ def build_command(args, tag):
         "--label_smoothing", str(cfg["label_smoothing"]),
         "--skip_test_epochs", "0",
         "--test_freq", "1",
-        "--random_seed", "1",
+        "--random_seed", str(args.random_seed),
         "--no_sdtp",
     ]
     if cfg.get("no_mae"):
