@@ -23,26 +23,30 @@ def main():
         d_model=32,
         hidden_dim=16,
         dropout=0.0,
-        dynamic_scale_init=0.1,
-        dynamic_scale_max=0.5,
+        dynamic_scale_init=0.02,
+        dynamic_scale_max=0.1,
     )
 
     tokens = torch.randn(6, 8, 32, requires_grad=True)
     padding = torch.zeros(6, 8, dtype=torch.bool)
     padding[0, -2:] = True
-    clip, diag = pool(tokens, key_padding_mask=padding)
+    base_logits = torch.randn(6, 8, requires_grad=True)
+    clip, diag = pool(tokens, key_padding_mask=padding, static_logits=base_logits)
 
     assert clip.shape == (6, 32)
     _assert_finite("clip", clip)
     for name, value in diag.items():
         _assert_finite(name, value)
-    assert 0.0 < diag["dynamic_scale"].item() < 0.5
+    assert 0.0 < diag["dynamic_scale"].item() < 0.1
 
     loss = clip.square().mean()
     loss.backward()
     if tokens.grad is None:
         raise AssertionError("input gradient is missing")
     _assert_finite("input gradient", tokens.grad)
+    if base_logits.grad is None:
+        raise AssertionError("base pooling gradient is missing")
+    _assert_finite("base pooling gradient", base_logits.grad)
 
     stationary = torch.randn(3, 1, 32).repeat(1, 8, 1)
     stationary_clip, stationary_diag = pool(stationary)

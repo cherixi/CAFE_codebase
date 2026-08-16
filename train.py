@@ -29,6 +29,8 @@ parser = argparse.ArgumentParser(description='Group Activity Detection train cod
 parser.add_argument('--dataset', default='cafe', type=str, help='dataset name')
 parser.add_argument('--val_mode', action='store_true')
 parser.add_argument('--split', default='place', type=str, help='dataset split. place or view')
+parser.add_argument('--experiment_tag', default='', type=str,
+                    help='optional filesystem-safe tag appended to result/output directories')
 # parser.add_argument('--data_path', default='/share/share/aixi/Cafe_Dataset/Cafe_Dataset/Cafe_Dataset/Dataset/', type=str, help='data path')
 parser.add_argument('--data_path', default='/home/ziyang/aixi/Dataset/Cafe_Dataset/Cafe_Dataset/Dataset/', type=str, help='data path')
 parser.add_argument('--tracks_source', default='gt', type=str, choices=['gt', 'pred'],
@@ -91,11 +93,13 @@ sdtp_group.add_argument('--no_sdtp', dest='use_sdtp', action='store_false',
 parser.set_defaults(use_sdtp=False)
 parser.add_argument('--sdtp_hidden_dim', default=64, type=int,
                     help='hidden dimension of SDTP score and fusion heads')
+parser.add_argument('--sdtp_scope', default='actor', choices=['actor', 'actor_group'],
+                    help='apply the dynamic residual to actor tokens only (safe default) or actor and group tokens')
 parser.add_argument('--sdtp_dropout', default=-1.0, type=float,
                     help='dropout in SDTP; <0 means use drop_rate')
-parser.add_argument('--sdtp_dynamic_scale_init', default=0.1, type=float,
+parser.add_argument('--sdtp_dynamic_scale_init', default=0.02, type=float,
                     help='initial bounded dynamic residual scale')
-parser.add_argument('--sdtp_dynamic_scale_max', default=0.5, type=float,
+parser.add_argument('--sdtp_dynamic_scale_max', default=0.1, type=float,
                     help='maximum bounded dynamic residual scale')
 parser.add_argument('--temporal_agg_mode', default='learned_pool', type=str,
                     choices=['learned_pool', 'frame_mean_main'],
@@ -275,7 +279,10 @@ def main():
     os.environ["CUDA_VISIBLE_DEVICES"] = args.device
 
     time_str = time.strftime("%Y-%m-%d_%H-%M-%S", time.localtime())
+    safe_tag = ''.join(c if c.isalnum() or c in '-_' else '-' for c in args.experiment_tag).strip('-_')
     exp_name = '[%s]_GAD_[%s]' % (args.dataset, time_str)
+    if safe_tag:
+        exp_name += '_[%s]' % safe_tag
     save_path = './result/%s' % exp_name
 
     if not os.path.exists(save_path):
@@ -353,7 +360,7 @@ def main():
     if args.use_sdtp:
         print_log(
             save_path,
-            f"SDTP cfg: hidden_dim={args.sdtp_hidden_dim}, dropout={args.sdtp_dropout}, "
+            f"SDTP cfg: scope={args.sdtp_scope}, hidden_dim={args.sdtp_hidden_dim}, dropout={args.sdtp_dropout}, "
             f"dynamic_scale_init={args.sdtp_dynamic_scale_init}, "
             f"dynamic_scale_max={args.sdtp_dynamic_scale_max}"
         )

@@ -79,6 +79,9 @@ class GADTR(nn.Module):
         self.group_time_pool = nn.Linear(self.hidden_dim, 1)
         self.temporal_agg_mode = getattr(args, 'temporal_agg_mode', 'learned_pool')
         self.use_sdtp = bool(getattr(args, 'use_sdtp', False))
+        self.sdtp_scope = str(getattr(args, 'sdtp_scope', 'actor')).lower()
+        if self.sdtp_scope not in {'actor', 'actor_group'}:
+            raise ValueError("sdtp_scope must be 'actor' or 'actor_group'")
         if self.use_sdtp:
             sdtp_hidden_dim = int(getattr(args, 'sdtp_hidden_dim', 64))
             sdtp_dropout = float(getattr(args, 'sdtp_dropout', args.drop_rate))
@@ -91,13 +94,14 @@ class GADTR(nn.Module):
                 dynamic_scale_init=sdtp_scale_init,
                 dynamic_scale_max=sdtp_scale_max,
             )
-            self.group_sdtp = StaticDynamicTemporalPool(
-                self.hidden_dim,
-                hidden_dim=sdtp_hidden_dim,
-                dropout=sdtp_dropout,
-                dynamic_scale_init=sdtp_scale_init,
-                dynamic_scale_max=sdtp_scale_max,
-            )
+            if self.sdtp_scope == 'actor_group':
+                self.group_sdtp = StaticDynamicTemporalPool(
+                    self.hidden_dim,
+                    hidden_dim=sdtp_hidden_dim,
+                    dropout=sdtp_dropout,
+                    dynamic_scale_init=sdtp_scale_init,
+                    dynamic_scale_max=sdtp_scale_max,
+                )
         
         # Distance mask threshold (kept for backward compatibility)
         self.distance_threshold = getattr(args, 'distance_threshold', None)
@@ -821,26 +825,32 @@ class GADTR(nn.Module):
             time_pos = self.time_pos_emb.weight[:t].unsqueeze(0)                                         # [1, t, c]
             temporal_actor_out, _ = self.temporal_encoder(temporal_actor_in, pos=time_pos)
 
+            actor_time_logits = self.actor_time_pool(temporal_actor_out).squeeze(-1)                     # [b*n, t]
             if self.use_sdtp:
-                actor_clip_flat, actor_sdtp_diag = self.actor_sdtp(temporal_actor_out)
+                actor_clip_flat, actor_sdtp_diag = self.actor_sdtp(
+                    temporal_actor_out,
+                    static_logits=actor_time_logits,
+                )
                 actor_clip = actor_clip_flat.reshape(bs, n, self.hidden_dim)
                 for key, value in actor_sdtp_diag.items():
                     sdtp_diag[f"actor_{key}"] = value
             else:
-                actor_time_logits = self.actor_time_pool(temporal_actor_out).squeeze(-1)                 # [b*n, t]
                 actor_time_weight = torch.softmax(actor_time_logits, dim=1).unsqueeze(-1)                # [b*n, t, 1]
                 actor_clip = (temporal_actor_out * actor_time_weight).sum(dim=1).reshape(bs, n, self.hidden_dim)
 
             # temporal modeling for group tokens
             temporal_group_in = group_hs.permute(0, 2, 1, 3).reshape(bs * self.num_group_tokens, t, self.hidden_dim)
             temporal_group_out, _ = self.temporal_encoder(temporal_group_in, pos=time_pos)
-            if self.use_sdtp:
-                group_clip_flat, group_sdtp_diag = self.group_sdtp(temporal_group_out)
+            group_time_logits = self.group_time_pool(temporal_group_out).squeeze(-1)                      # [b*k, t]
+            if self.use_sdtp and self.sdtp_scope == 'actor_group':
+                group_clip_flat, group_sdtp_diag = self.group_sdtp(
+                    temporal_group_out,
+                    static_logits=group_time_logits,
+                )
                 group_clip = group_clip_flat.reshape(bs, self.num_group_tokens, self.hidden_dim)
                 for key, value in group_sdtp_diag.items():
                     sdtp_diag[f"group_{key}"] = value
             else:
-                group_time_logits = self.group_time_pool(temporal_group_out).squeeze(-1)                  # [b*k, t]
                 group_time_weight = torch.softmax(group_time_logits, dim=1).unsqueeze(-1)                 # [b*k, t, 1]
                 group_clip = (temporal_group_out * group_time_weight).sum(dim=1).reshape(bs, self.num_group_tokens, self.hidden_dim)
 

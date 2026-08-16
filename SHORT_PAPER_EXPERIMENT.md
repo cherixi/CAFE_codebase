@@ -23,10 +23,10 @@ The training command explicitly disables:
 - PMR (`--no_pairwise_refiner`)
 - all Attach, Margin, qPMR, and IA-STIR descendants, which are absent from this base commit
 
-SDTP decomposes each temporal token sequence into a learned static appearance summary
-and a bounded first-order feature-difference residual. The residual scale is initialized
-to 0.1 and constrained below 0.5 so the new path cannot dominate the stable appearance
-representation at initialization.
+SDTP keeps the original learned temporal pooling as its static path and adds a bounded
+first-order feature-difference residual. After the first actor+group experiment showed
+group-gate saturation, the safe default applies the dynamic residual to actor tokens only.
+Its scale is initialized to 0.02 and constrained below 0.1.
 
 Label smoothing is an optional training trick and is not part of SDTP.
 
@@ -45,3 +45,7 @@ Run the focused check before training:
 ```bash
 python scripts/check_sdtp_smoke.py
 ```
+
+For parallel screening, `scripts/run_agile_experiment.py` provides tagged variants and
+historical-curve early stopping. It evaluates every epoch and stops only clearly collapsed
+or non-viable runs; the target is Practical GAD on split-by-place (10.85 / 30.90 / 63.84).

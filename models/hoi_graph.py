@@ -263,11 +263,14 @@ class StaticDynamicTemporalPool(nn.Module):
         weights = torch.softmax(logits, dim=1)
         return torch.nan_to_num(weights, nan=0.0)
 
-    def forward(self, x, key_padding_mask=None):
+    def forward(self, x, key_padding_mask=None, static_logits=None):
         """
         Args:
             x: Temporal tokens with shape [B, T, D].
             key_padding_mask: Optional [B, T] mask, where True denotes padding.
+            static_logits: Optional [B, T] logits from the existing temporal
+                pooling head. Supplying them keeps SDTP as a residual extension
+                of the established pooling path instead of replacing it.
         """
         if x.dim() != 3:
             raise ValueError(f"Expected [B, T, D] input, got {tuple(x.shape)}")
@@ -278,7 +281,13 @@ class StaticDynamicTemporalPool(nn.Module):
         else:
             valid_mask = ~key_padding_mask.bool()
 
-        static_logits = self.static_score(x).squeeze(-1)
+        if static_logits is None:
+            static_logits = self.static_score(x).squeeze(-1)
+        elif static_logits.shape != (batch_size, num_frames):
+            raise ValueError(
+                f"Expected static_logits {(batch_size, num_frames)}, "
+                f"got {tuple(static_logits.shape)}"
+            )
         static_weight = self._masked_softmax(static_logits, valid_mask)
         static_clip = torch.sum(x * static_weight.unsqueeze(-1), dim=1)
 

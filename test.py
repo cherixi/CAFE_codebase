@@ -26,6 +26,7 @@ parser = argparse.ArgumentParser(description='Group Activity Detection train cod
 parser.add_argument('--dataset', default='cafe', type=str, help='dataset name')
 parser.add_argument('--val_mode', action='store_true')
 parser.add_argument('--split', default='place', type=str, help='dataset split. place or view')
+parser.add_argument('--experiment_tag', default='', type=str)
 parser.add_argument('--data_path', default='/home/ziyang/aixi/Dataset/Cafe_Dataset/Cafe_Dataset/Dataset/', type=str, help='data path')
 parser.add_argument('--tracks_source', default='gt', type=str, choices=['gt', 'pred'],
                     help='which track pkl to load under data_path/cafe: gt_tracks.pkl or pred_tracks_aligned_to_gt_slots.pkl')
@@ -84,9 +85,10 @@ sdtp_group.add_argument('--no_sdtp', dest='use_sdtp', action='store_false',
                         help='use the original learned temporal pooling')
 parser.set_defaults(use_sdtp=False)
 parser.add_argument('--sdtp_hidden_dim', default=64, type=int)
+parser.add_argument('--sdtp_scope', default='actor', choices=['actor', 'actor_group'])
 parser.add_argument('--sdtp_dropout', default=-1.0, type=float)
-parser.add_argument('--sdtp_dynamic_scale_init', default=0.1, type=float)
-parser.add_argument('--sdtp_dynamic_scale_max', default=0.5, type=float)
+parser.add_argument('--sdtp_dynamic_scale_init', default=0.02, type=float)
+parser.add_argument('--sdtp_dynamic_scale_max', default=0.1, type=float)
 
 # OLIC (Object-Conditioned Local Interaction Conditioner)
 olic_group = parser.add_mutually_exclusive_group()

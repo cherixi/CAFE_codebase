@@ -31,9 +31,10 @@ case "$variant" in
   sdtp)
     extra_args=(
       --use_sdtp
+      --sdtp_scope actor
       --sdtp_hidden_dim 64
-      --sdtp_dynamic_scale_init 0.1
-      --sdtp_dynamic_scale_max 0.5
+      --sdtp_dynamic_scale_init 0.02
+      --sdtp_dynamic_scale_max 0.1
     )
     ;;
   ablation)
