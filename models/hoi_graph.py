@@ -263,7 +263,13 @@ class StaticDynamicTemporalPool(nn.Module):
         weights = torch.softmax(logits, dim=1)
         return torch.nan_to_num(weights, nan=0.0)
 
-    def forward(self, x, key_padding_mask=None, static_logits=None):
+    def forward(
+        self,
+        x,
+        key_padding_mask=None,
+        static_logits=None,
+        dynamic_residual_enabled=True,
+    ):
         """
         Args:
             x: Temporal tokens with shape [B, T, D].
@@ -271,6 +277,9 @@ class StaticDynamicTemporalPool(nn.Module):
             static_logits: Optional [B, T] logits from the existing temporal
                 pooling head. Supplying them keeps SDTP as a residual extension
                 of the established pooling path instead of replacing it.
+            dynamic_residual_enabled: If False, still execute the complete
+                dynamic branch but multiply its residual by zero. This provides
+                a parameter- and RNG-matched static control for ablations.
         """
         if x.dim() != 3:
             raise ValueError(f"Expected [B, T, D] input, got {tuple(x.shape)}")
@@ -308,6 +317,10 @@ class StaticDynamicTemporalPool(nn.Module):
         gate = torch.sigmoid(self.fusion_gate(torch.cat([static_clip, dynamic_clip], dim=-1)))
         dynamic_scale = self.dynamic_scale_max * torch.sigmoid(self.dynamic_scale_logit)
         dynamic_residual = dynamic_scale * gate * dynamic_clip
+        if not dynamic_residual_enabled:
+            # Preserve dynamic-branch computation and dropout RNG consumption;
+            # remove only its contribution to the pooled representation.
+            dynamic_residual = dynamic_residual * 0.0
         clip = static_clip + dynamic_residual
 
         eps = torch.finfo(x.dtype).eps if x.dtype.is_floating_point else 1e-6
@@ -320,5 +333,8 @@ class StaticDynamicTemporalPool(nn.Module):
             "dynamic_ratio": dynamic_ratio.mean().detach(),
             "static_entropy": static_entropy.mean().detach(),
             "dynamic_entropy": dynamic_entropy.mean().detach(),
+            "dynamic_residual_enabled": dynamic_scale.new_tensor(
+                1.0 if dynamic_residual_enabled else 0.0
+            ),
         }
         return clip, diagnostics

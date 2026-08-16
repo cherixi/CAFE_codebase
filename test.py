@@ -89,6 +89,14 @@ parser.add_argument('--sdtp_scope', default='actor', choices=['actor', 'actor_gr
 parser.add_argument('--sdtp_dropout', default=-1.0, type=float)
 parser.add_argument('--sdtp_dynamic_scale_init', default=0.02, type=float)
 parser.add_argument('--sdtp_dynamic_scale_max', default=0.1, type=float)
+sdtp_residual_group = parser.add_mutually_exclusive_group()
+sdtp_residual_group.add_argument(
+    '--sdtp_dynamic_residual', dest='sdtp_dynamic_residual', action='store_true'
+)
+sdtp_residual_group.add_argument(
+    '--sdtp_static_control', dest='sdtp_dynamic_residual', action='store_false'
+)
+parser.set_defaults(sdtp_dynamic_residual=True)
 
 # OLIC (Object-Conditioned Local Interaction Conditioner)
 olic_group = parser.add_mutually_exclusive_group()

@@ -80,6 +80,9 @@ class GADTR(nn.Module):
         self.temporal_agg_mode = getattr(args, 'temporal_agg_mode', 'learned_pool')
         self.use_sdtp = bool(getattr(args, 'use_sdtp', False))
         self.sdtp_scope = str(getattr(args, 'sdtp_scope', 'actor')).lower()
+        self.sdtp_dynamic_residual = bool(
+            getattr(args, 'sdtp_dynamic_residual', True)
+        )
         if self.sdtp_scope not in {'actor', 'actor_group'}:
             raise ValueError("sdtp_scope must be 'actor' or 'actor_group'")
         if self.use_sdtp:
@@ -830,6 +833,7 @@ class GADTR(nn.Module):
                 actor_clip_flat, actor_sdtp_diag = self.actor_sdtp(
                     temporal_actor_out,
                     static_logits=actor_time_logits,
+                    dynamic_residual_enabled=self.sdtp_dynamic_residual,
                 )
                 actor_clip = actor_clip_flat.reshape(bs, n, self.hidden_dim)
                 for key, value in actor_sdtp_diag.items():
@@ -846,6 +850,7 @@ class GADTR(nn.Module):
                 group_clip_flat, group_sdtp_diag = self.group_sdtp(
                     temporal_group_out,
                     static_logits=group_time_logits,
+                    dynamic_residual_enabled=self.sdtp_dynamic_residual,
                 )
                 group_clip = group_clip_flat.reshape(bs, self.num_group_tokens, self.hidden_dim)
                 for key, value in group_sdtp_diag.items():
@@ -903,6 +908,9 @@ class GADTR(nn.Module):
             "pairwise_refine_delta_mean": pairwise_out["pairwise_refine_delta_mean"].detach(),
             "membership_entropy": pairwise_out["membership_entropy"].detach(),
             "sdtp_enabled": inst_repr.new_tensor(1.0 if self.use_sdtp else 0.0),
+            "sdtp_dynamic_residual_enabled": inst_repr.new_tensor(
+                1.0 if self.use_sdtp and self.sdtp_dynamic_residual else 0.0
+            ),
             "sdtp_actor_gate_mean": sdtp_diag["actor_gate_mean"],
             "sdtp_group_gate_mean": sdtp_diag["group_gate_mean"],
             "sdtp_actor_dynamic_scale": sdtp_diag["actor_dynamic_scale"],

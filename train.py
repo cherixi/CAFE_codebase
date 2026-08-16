@@ -101,6 +101,16 @@ parser.add_argument('--sdtp_dynamic_scale_init', default=0.02, type=float,
                     help='initial bounded dynamic residual scale')
 parser.add_argument('--sdtp_dynamic_scale_max', default=0.1, type=float,
                     help='maximum bounded dynamic residual scale')
+sdtp_residual_group = parser.add_mutually_exclusive_group()
+sdtp_residual_group.add_argument(
+    '--sdtp_dynamic_residual', dest='sdtp_dynamic_residual', action='store_true',
+    help='enable the SDTP dynamic residual (default)'
+)
+sdtp_residual_group.add_argument(
+    '--sdtp_static_control', dest='sdtp_dynamic_residual', action='store_false',
+    help='instantiate and execute SDTP but zero only its dynamic residual'
+)
+parser.set_defaults(sdtp_dynamic_residual=True)
 parser.add_argument('--temporal_agg_mode', default='learned_pool', type=str,
                     choices=['learned_pool', 'frame_mean_main'],
                     help='temporal aggregation mode: learned pooling (default) or main-style frame mean ablation')
@@ -362,7 +372,8 @@ def main():
             save_path,
             f"SDTP cfg: scope={args.sdtp_scope}, hidden_dim={args.sdtp_hidden_dim}, dropout={args.sdtp_dropout}, "
             f"dynamic_scale_init={args.sdtp_dynamic_scale_init}, "
-            f"dynamic_scale_max={args.sdtp_dynamic_scale_max}"
+            f"dynamic_scale_max={args.sdtp_dynamic_scale_max}, "
+            f"dynamic_residual={int(args.sdtp_dynamic_residual)}"
         )
     print_log(save_path, f"Label smoothing: {args.label_smoothing}")
     print_log(save_path, f"----------------------------------------------------------------")

@@ -46,6 +46,11 @@ VARIANTS = {
         "mae_fusion": "static_add",
         "label_smoothing": 0.05,
     },
+    "bias_add_nols": {
+        "hoi_mode": "bias",
+        "mae_fusion": "static_add",
+        "label_smoothing": 0.0,
+    },
     "bias_nome": {
         "hoi_mode": "bias",
         "mae_fusion": "none",
@@ -57,6 +62,19 @@ VARIANTS = {
         "mae_fusion": "static_pool",
         "label_smoothing": 0.05,
         "use_sdtp": True,
+    },
+    "actor_motion_bias_add": {
+        "hoi_mode": "bias",
+        "mae_fusion": "static_add",
+        "label_smoothing": 0.05,
+        "use_sdtp": True,
+    },
+    "actor_motion_bias_add_control": {
+        "hoi_mode": "bias",
+        "mae_fusion": "static_add",
+        "label_smoothing": 0.05,
+        "use_sdtp": True,
+        "sdtp_static_control": True,
     },
 }
 
@@ -110,6 +128,8 @@ def build_command(args, tag):
             "--sdtp_dynamic_scale_init", "0.02",
             "--sdtp_dynamic_scale_max", "0.1",
         ])
+        if cfg.get("sdtp_static_control"):
+            command.append("--sdtp_static_control")
     return command
 
 
