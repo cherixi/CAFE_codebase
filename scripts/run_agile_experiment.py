@@ -76,6 +76,19 @@ VARIANTS = {
         "use_sdtp": True,
         "sdtp_static_control": True,
     },
+    "actor_motion_none_add": {
+        "hoi_mode": "none",
+        "mae_fusion": "static_add",
+        "label_smoothing": 0.05,
+        "use_sdtp": True,
+    },
+    "actor_motion_none_add_control": {
+        "hoi_mode": "none",
+        "mae_fusion": "static_add",
+        "label_smoothing": 0.05,
+        "use_sdtp": True,
+        "sdtp_static_control": True,
+    },
     "actor_motion_bias_nome": {
         "hoi_mode": "bias",
         "mae_fusion": "none",
