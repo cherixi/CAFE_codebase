@@ -131,14 +131,13 @@ def build_command(args, tag):
         "--skip_test_epochs", "0",
         "--test_freq", "1",
         "--random_seed", str(args.random_seed),
-        "--no_sdtp",
     ]
     if cfg.get("no_mae"):
         command.append("--no_mae")
     if "hoi_hard_thresh" in cfg:
         command.extend(["--hoi_hard_thresh", str(cfg["hoi_hard_thresh"])])
     if cfg.get("use_sdtp"):
-        command[-1] = "--use_sdtp"
+        command.append("--use_sdtp")
         command.extend([
             "--sdtp_scope", "actor",
             "--sdtp_dynamic_scale_init", "0.02",
@@ -146,6 +145,8 @@ def build_command(args, tag):
         ])
         if cfg.get("sdtp_static_control"):
             command.append("--sdtp_static_control")
+    else:
+        command.append("--no_sdtp")
     return command
 
 
