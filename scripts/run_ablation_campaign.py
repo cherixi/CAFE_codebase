@@ -4,6 +4,7 @@
 import argparse
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -37,6 +38,7 @@ def parse_args():
     parser.add_argument("--gpu_cleanup_seconds", type=int, default=30)
     parser.add_argument("--gpu_cleanup_timeout", type=int, default=1800)
     parser.add_argument("--max_local_gpus", type=int, default=8)
+    parser.add_argument("--min_free_gb", type=float, default=50.0)
     parser.add_argument("--dry_run", action="store_true")
     return parser.parse_args()
 
@@ -54,6 +56,10 @@ def atomic_write_json(path, payload):
     tmp = path.with_suffix(".tmp")
     tmp.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
     tmp.replace(path)
+
+
+def free_space_gb(path):
+    return shutil.disk_usage(path).free / (1024 ** 3)
 
 
 def process_alive(pid):
@@ -149,6 +155,7 @@ def monitor_supervisors(items, args, state_path, stage_name):
                     for item in items
                 ],
                 "validation": states_by_pid,
+                "free_space_gb": free_space_gb(args.repo),
             },
         )
         if not alive:
@@ -337,6 +344,18 @@ def main():
     for stage in plan["stages"]:
         devices = validate_stage(stage, args.max_local_gpus)
         time.sleep(args.gpu_cleanup_seconds)
+        available_gb = free_space_gb(repo)
+        if available_gb < args.min_free_gb:
+            atomic_write_json(
+                state_path,
+                {
+                    "state": "blocked_low_disk",
+                    "stage": stage["name"],
+                    "free_space_gb": available_gb,
+                    "min_free_gb": args.min_free_gb,
+                },
+            )
+            return
         wait_for_devices_idle(devices, args, state_path, stage["name"])
         current = launch_stage(stage, repo, run_root)
         outcome = monitor_supervisors(current, args, state_path, stage["name"])
