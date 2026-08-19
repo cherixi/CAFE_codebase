@@ -86,7 +86,10 @@ class DinoV2Backbone(nn.Module):
         model_name = args.backbone if 'dinov2' in args.backbone else 'dinov2_vits14'
         print(f"[DinoV2Backbone] Loading model: {model_name}")
         
-        self.backbone = torch.hub.load('facebookresearch/dinov2', model_name)
+        # Cached DINOv2 weights must remain usable on compute nodes without GitHub access.
+        self.backbone = torch.hub.load(
+            'facebookresearch/dinov2', model_name, skip_validation=True
+        )
         
         # 根据模型型号自动设置 num_channels
         if 'vits' in model_name:
