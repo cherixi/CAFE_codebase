@@ -87,6 +87,12 @@ class GADTR(nn.Module):
         self.group_match_emb = nn.Linear(self.hidden_dim, self.hidden_dim)
         self.use_pairwise_refiner = bool(getattr(args, 'use_pairwise_refiner', True))
         self.pairwise_refine_scale = float(getattr(args, 'pairwise_refine_scale', 0.5))
+        self.pairwise_support_norm = str(getattr(args, 'pairwise_support_norm', 'none')).lower()
+        if self.pairwise_support_norm not in {'none', 'group_mass'}:
+            raise ValueError(
+                f"Unsupported pairwise_support_norm={self.pairwise_support_norm!r}; "
+                "expected 'none' or 'group_mass'."
+            )
         self.pairwise_use_object_relation = bool(getattr(args, 'pairwise_use_object_relation', True))
         self.pairwise_use_geom_relation = bool(getattr(args, 'pairwise_use_geom_relation', True))
         self.pairwise_use_small_object_relation = bool(getattr(args, 'pairwise_use_small_object_relation', True))
@@ -113,6 +119,16 @@ class GADTR(nn.Module):
         self.olic_use_ffn = bool(getattr(args, 'olic_use_ffn', False))
         self.olic_score_use = getattr(args, 'olic_score_use', 'prune_relevance')
         self.olic_res_scale_init = float(getattr(args, 'olic_res_scale_init', 0.0))
+        self.olic_actor_residual = bool(getattr(args, 'olic_actor_residual', True))
+        self.olic_res_scale_mode = str(getattr(args, 'olic_res_scale_mode', 'signed')).lower()
+        if self.olic_res_scale_mode not in {'signed', 'bounded'}:
+            raise ValueError(
+                f"Unsupported olic_res_scale_mode={self.olic_res_scale_mode!r}; "
+                "expected 'signed' or 'bounded'."
+            )
+        self.olic_res_scale_max = float(getattr(args, 'olic_res_scale_max', 0.05))
+        if self.olic_res_scale_max <= 0.0:
+            raise ValueError('olic_res_scale_max must be positive')
         self.olic_gate_init_bias = float(getattr(args, 'olic_gate_init_bias', -4.0))
         self.olic_attn_tau = float(getattr(args, 'olic_attn_tau', 2.0))
         if self.olic_attn_tau <= 0.0:
@@ -166,12 +182,9 @@ class GADTR(nn.Module):
             self.olic_gate_group = MLP(2 * self.hidden_dim, self.hidden_dim, 1, 2)
             self.olic_drop = nn.Dropout(p=self.olic_dropout_p)
             # Learnable residual scaling for stable cold start.
-            self.olic_actor_res_scale = nn.Parameter(
-                torch.tensor(self.olic_res_scale_init, dtype=torch.float32)
-            )
-            self.olic_group_res_scale = nn.Parameter(
-                torch.tensor(self.olic_res_scale_init, dtype=torch.float32)
-            )
+            res_scale_param_init = self._olic_res_scale_param_init(self.olic_res_scale_init)
+            self.olic_actor_res_scale = nn.Parameter(torch.tensor(res_scale_param_init, dtype=torch.float32))
+            self.olic_group_res_scale = nn.Parameter(torch.tensor(res_scale_param_init, dtype=torch.float32))
 
             # Optional FFN block with zero-initialized residual scale.
             if self.olic_use_ffn:
@@ -331,6 +344,29 @@ class GADTR(nn.Module):
         diff_norm = torch.norm(diff, dim=-1)
         return torch.stack((cos, diff_norm), dim=-1)
 
+    def _olic_res_scale_param_init(self, effective_init):
+        if self.olic_res_scale_mode == 'signed':
+            return float(effective_init)
+
+        # Bounded mode keeps the cold start effectively closed without
+        # eliminating gradients through the sigmoid parameterization.
+        eps = 1e-4
+        ratio = float(effective_init) / self.olic_res_scale_max
+        ratio = max(eps, min(1.0 - eps, ratio))
+        return math.log(ratio / (1.0 - ratio))
+
+    def _effective_olic_res_scales(self):
+        if self.olic_res_scale_mode == 'bounded':
+            actor_scale = self.olic_res_scale_max * torch.sigmoid(self.olic_actor_res_scale)
+            group_scale = self.olic_res_scale_max * torch.sigmoid(self.olic_group_res_scale)
+        else:
+            actor_scale = self.olic_actor_res_scale
+            group_scale = self.olic_group_res_scale
+
+        if not self.olic_actor_residual:
+            actor_scale = actor_scale * 0.0
+        return actor_scale, group_scale
+
     @staticmethod
     def _aggregate_anchor_relations(anchor_attn, object_scores, object_family_id, object_valid_mask, anchor_source='gdino'):
         # anchor_attn: [B, T, N, M], object_scores/family/valid: [B, T, M]
@@ -386,6 +422,8 @@ class GADTR(nn.Module):
                 "pairwise_affinity_signed": zero_pair,
                 "pairwise_valid_mask": pair_valid,
                 "pairwise_refine_delta_mean": actor_clip.new_tensor(0.0),
+                "pairwise_support_abs_mean": actor_clip.new_tensor(0.0),
+                "pairwise_group_mass_mean": actor_clip.new_tensor(0.0),
                 "membership_entropy": entropy,
             }
 
@@ -422,6 +460,11 @@ class GADTR(nn.Module):
 
         base_probs = F.softmax(base_logits, dim=1) * actor_valid.unsqueeze(1).float()
         support = torch.einsum('bgi,bij->bgj', base_probs, pair_signed)
+        group_mass = base_probs.sum(dim=2, keepdim=True)
+        if self.pairwise_support_norm == 'group_mass':
+            # Remove group-size-dependent support growth without amplifying
+            # queries whose total soft assignment mass is below one actor.
+            support = support / group_mass.clamp(min=1.0)
         support = support * actor_valid.unsqueeze(1).float()
         refined_logits = base_logits + self.pairwise_refine_scale * support
         membership = F.softmax(refined_logits, dim=1)
@@ -429,6 +472,9 @@ class GADTR(nn.Module):
         refine_mask = actor_valid.unsqueeze(1).expand_as(refined_logits).float()
         refine_delta = (refined_logits - base_logits).abs() * refine_mask
         refine_delta_mean = refine_delta.sum() / refine_mask.sum().clamp(min=1.0)
+        support_abs_mean = (support.abs() * refine_mask).sum() / refine_mask.sum().clamp(min=1.0)
+        group_mass_valid = group_mass.expand_as(refined_logits) * refine_mask
+        group_mass_mean = group_mass_valid.sum() / refine_mask.sum().clamp(min=1.0)
         membership_safe = membership.clamp(min=1e-9)
         membership_entropy = -(membership * membership_safe.log()).sum(dim=1)
         membership_entropy = (membership_entropy * actor_valid.float()).sum() / actor_valid.float().sum().clamp(min=1.0)
@@ -442,6 +488,8 @@ class GADTR(nn.Module):
             "pairwise_affinity_signed": pair_signed,
             "pairwise_valid_mask": pair_valid,
             "pairwise_refine_delta_mean": refine_delta_mean,
+            "pairwise_support_abs_mean": support_abs_mean,
+            "pairwise_group_mass_mean": group_mass_mean,
             "membership_entropy": membership_entropy,
         }
 
@@ -742,9 +790,10 @@ class GADTR(nn.Module):
                 ow=ow,
             )
 
-            actor_hs = actor_hs + olic_scale * self.olic_actor_res_scale * self.olic_drop(alpha_o * c_actor)
+            olic_actor_res_scale, olic_group_res_scale = self._effective_olic_res_scales()
+            actor_hs = actor_hs + olic_scale * olic_actor_res_scale * self.olic_drop(alpha_o * c_actor)
             if not self.disable_group_olic:
-                group_hs = group_hs + olic_scale * self.olic_group_res_scale * self.olic_drop(beta_o * c_group)
+                group_hs = group_hs + olic_scale * olic_group_res_scale * self.olic_drop(beta_o * c_group)
             else:
                 beta_o = torch.zeros_like(beta_o)
 
@@ -773,6 +822,8 @@ class GADTR(nn.Module):
                 "anchor_valid_obj_per_actor": actor_hs.new_tensor(0.0),
                 "olic_geom_scale": actor_hs.new_tensor(0.0),
             }
+            olic_actor_res_scale = actor_hs.new_tensor(0.0)
+            olic_group_res_scale = actor_hs.new_tensor(0.0)
 
         if self.temporal_agg_mode == 'frame_mean_main':
             # Main-branch style ablation:
@@ -846,11 +897,15 @@ class GADTR(nn.Module):
             "pairwise_affinity_signed": pairwise_out["pairwise_affinity_signed"],
             "pairwise_valid_mask": pairwise_out["pairwise_valid_mask"],
             "pairwise_refine_delta_mean": pairwise_out["pairwise_refine_delta_mean"].detach(),
+            "pairwise_support_abs_mean": pairwise_out["pairwise_support_abs_mean"].detach(),
+            "pairwise_group_mass_mean": pairwise_out["pairwise_group_mass_mean"].detach(),
             "membership_entropy": pairwise_out["membership_entropy"].detach(),
             "group_olic_disabled": inst_repr.new_tensor(1.0 if self.disable_group_olic else 0.0),
             "olic_alpha_mean": olic_alpha_mean.detach(),
             "olic_beta_mean": olic_beta_mean.detach(),
             "olic_warmup_scale": inst_repr.new_tensor(olic_scale),
+            "olic_res_actor": olic_actor_res_scale.detach(),
+            "olic_res_group": olic_group_res_scale.detach(),
             "olic_qk_std": olic_diag["olic_qk_std"].detach(),
             "olic_geom_std": olic_diag["olic_geom_std"].detach(),
             "olic_geom_qk_ratio": olic_diag["olic_geom_qk_ratio"].detach(),

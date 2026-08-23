@@ -116,6 +116,16 @@ parser.add_argument('--olic_score_use', default='prune_relevance', type=str,
                     help='how detector score is used in OLIC (v1 fixed to prune_relevance)')
 parser.add_argument('--olic_res_scale_init', default=0.0, type=float,
                     help='initial residual scale gamma for OLIC residual fusion')
+actor_residual_group = parser.add_mutually_exclusive_group()
+actor_residual_group.add_argument('--olic_actor_residual', dest='olic_actor_residual', action='store_true',
+                                  help='enable actor-side OLIC residual fusion')
+actor_residual_group.add_argument('--no_olic_actor_residual', dest='olic_actor_residual', action='store_false',
+                                  help='disable actor residual while retaining object routing for PMR relations')
+parser.set_defaults(olic_actor_residual=True)
+parser.add_argument('--olic_res_scale_mode', default='signed', choices=['signed', 'bounded'],
+                    help='signed keeps legacy residual scale; bounded constrains it to [0, max]')
+parser.add_argument('--olic_res_scale_max', default=0.05, type=float,
+                    help='maximum effective OLIC residual scale in bounded mode')
 parser.add_argument('--olic_gate_init_bias', default=-4.0, type=float,
                     help='initial bias for OLIC gate heads (negative keeps gates near closed at start)')
 parser.add_argument('--olic_warmup_epochs', default=5, type=int,
@@ -170,6 +180,8 @@ parser.add_argument('--pairwise_loss_coef', default=0.25, type=float,
                     help='loss weight for pairwise same-group supervision')
 parser.add_argument('--pairwise_refine_scale', default=0.5, type=float,
                     help='residual scale for pairwise membership refinement')
+parser.add_argument('--pairwise_support_norm', default='none', choices=['none', 'group_mass'],
+                    help='optionally normalize PMR support by each query soft-assignment mass')
 
 # Loss option
 parser.add_argument('--temperature', default=0.2, type=float, help='consistency loss temperature')
@@ -308,6 +320,8 @@ def main():
             f"OLIC cfg: M={args.num_object_boxes}, topk={args.olic_topk_obj}, "
             f"dropout={args.olic_dropout}, score_use={args.olic_score_use}, "
             f"res_scale_init={args.olic_res_scale_init}, gate_init_bias={args.olic_gate_init_bias}, "
+            f"actor_residual={int(args.olic_actor_residual)}, res_scale_mode={args.olic_res_scale_mode}, "
+            f"res_scale_max={args.olic_res_scale_max}, "
             f"warmup_epochs={args.olic_warmup_epochs}, pruning=OFF(soft-routing-all-valid), "
             f"attn_tau={args.olic_attn_tau}, anchor_attn_tau={args.anchor_attn_tau}, "
             f"dual_channels={int(args.use_dual_object_channels)}, geom_scale_init={args.olic_geom_scale_init}, "
@@ -323,6 +337,7 @@ def main():
         print_log(
             save_path,
             f"PMR cfg: refine_scale={args.pairwise_refine_scale}, loss_coef={args.pairwise_loss_coef}, "
+            f"support_norm={args.pairwise_support_norm}, "
             f"use_geom={int(args.pairwise_use_geom_relation)}, use_obj={int(args.pairwise_use_object_relation)}, "
             f"use_small_obj={int(args.pairwise_use_small_object_relation)}, use_anchor={int(args.pairwise_use_anchor_relation)}, "
             f"anchor_source={args.pmr_anchor_source}"
@@ -493,12 +508,14 @@ def main():
         if args.use_pairwise_refiner and 'pair_pos_mean' in train_log:
             print_log(
                 save_path,
-                "PMR(train): pos=%.4f neg=%.4f gap=%.4f refine=%.4f memb_ent=%.4f group_olic_disabled=%.0f"
+                "PMR(train): pos=%.4f neg=%.4f gap=%.4f refine=%.4f support=%.4f group_mass=%.4f memb_ent=%.4f group_olic_disabled=%.0f"
                 % (
                     train_log.get('pair_pos_mean', 0.0),
                     train_log.get('pair_neg_mean', 0.0),
                     train_log.get('pair_gap', 0.0),
                     train_log.get('pairwise_refine_delta_mean', 0.0),
+                    train_log.get('pairwise_support_abs_mean', 0.0),
+                    train_log.get('pairwise_group_mass_mean', 0.0),
                     train_log.get('membership_entropy', 0.0),
                     train_log.get('group_olic_disabled', 0.0),
                 )
@@ -548,12 +565,14 @@ def main():
             if args.use_pairwise_refiner and 'pair_pos_mean' in test_log:
                 print_log(
                     save_path,
-                    "PMR(test): pos=%.4f neg=%.4f gap=%.4f refine=%.4f memb_ent=%.4f group_olic_disabled=%.0f"
+                    "PMR(test): pos=%.4f neg=%.4f gap=%.4f refine=%.4f support=%.4f group_mass=%.4f memb_ent=%.4f group_olic_disabled=%.0f"
                     % (
                         test_log.get('pair_pos_mean', 0.0),
                         test_log.get('pair_neg_mean', 0.0),
                         test_log.get('pair_gap', 0.0),
                         test_log.get('pairwise_refine_delta_mean', 0.0),
+                        test_log.get('pairwise_support_abs_mean', 0.0),
+                        test_log.get('pairwise_group_mass_mean', 0.0),
                         test_log.get('membership_entropy', 0.0),
                         test_log.get('group_olic_disabled', 0.0),
                     )
@@ -727,15 +746,16 @@ def train(train_loader, model, criterion, optimizer, epoch):
             pred_group_idx = outputs['pred_activities'].argmax(dim=-1)
             no_group_ratio = (pred_group_idx == args.num_class).float().mean()
             metric_logger.update(olic_no_group_ratio=float(no_group_ratio.item()))
-            module_ref = model.module if hasattr(model, 'module') else model
-            if hasattr(module_ref, 'olic_actor_res_scale'):
+            if 'olic_res_actor' in outputs:
                 metric_logger.update(
-                    olic_res_actor=float(module_ref.olic_actor_res_scale.detach().item()),
-                    olic_res_group=float(module_ref.olic_group_res_scale.detach().item()),
+                    olic_res_actor=float(outputs['olic_res_actor'].mean().item()),
+                    olic_res_group=float(outputs['olic_res_group'].mean().item()),
                 )
         if args.use_pairwise_refiner and 'pairwise_refine_delta_mean' in outputs:
             metric_logger.update(
                 pairwise_refine_delta_mean=float(outputs['pairwise_refine_delta_mean'].mean().item()),
+                pairwise_support_abs_mean=float(outputs['pairwise_support_abs_mean'].mean().item()),
+                pairwise_group_mass_mean=float(outputs['pairwise_group_mass_mean'].mean().item()),
                 membership_entropy=float(outputs['membership_entropy'].mean().item()),
                 group_olic_disabled=float(outputs['group_olic_disabled'].mean().item()),
             )
@@ -843,15 +863,16 @@ def validate(test_loader, model, criterion, metrics, epoch):
             pred_group_idx = outputs['pred_activities'].argmax(dim=-1)
             no_group_ratio = (pred_group_idx == args.num_class).float().mean()
             metric_logger.update(olic_no_group_ratio=float(no_group_ratio.item()))
-            module_ref = model.module if hasattr(model, 'module') else model
-            if hasattr(module_ref, 'olic_actor_res_scale'):
+            if 'olic_res_actor' in outputs:
                 metric_logger.update(
-                    olic_res_actor=float(module_ref.olic_actor_res_scale.detach().item()),
-                    olic_res_group=float(module_ref.olic_group_res_scale.detach().item()),
+                    olic_res_actor=float(outputs['olic_res_actor'].mean().item()),
+                    olic_res_group=float(outputs['olic_res_group'].mean().item()),
                 )
         if args.use_pairwise_refiner and 'pairwise_refine_delta_mean' in outputs:
             metric_logger.update(
                 pairwise_refine_delta_mean=float(outputs['pairwise_refine_delta_mean'].mean().item()),
+                pairwise_support_abs_mean=float(outputs['pairwise_support_abs_mean'].mean().item()),
+                pairwise_group_mass_mean=float(outputs['pairwise_group_mass_mean'].mean().item()),
                 membership_entropy=float(outputs['membership_entropy'].mean().item()),
                 group_olic_disabled=float(outputs['group_olic_disabled'].mean().item()),
             )

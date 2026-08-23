@@ -107,6 +107,16 @@ parser.add_argument('--olic_score_use', default='prune_relevance', type=str,
                     help='how detector score is used in OLIC (v1 fixed to prune_relevance)')
 parser.add_argument('--olic_res_scale_init', default=0.0, type=float,
                     help='initial residual scale gamma for OLIC residual fusion')
+actor_residual_group = parser.add_mutually_exclusive_group()
+actor_residual_group.add_argument('--olic_actor_residual', dest='olic_actor_residual', action='store_true',
+                                  help='enable actor-side OLIC residual fusion')
+actor_residual_group.add_argument('--no_olic_actor_residual', dest='olic_actor_residual', action='store_false',
+                                  help='disable actor residual while retaining object routing for PMR relations')
+parser.set_defaults(olic_actor_residual=True)
+parser.add_argument('--olic_res_scale_mode', default='signed', choices=['signed', 'bounded'],
+                    help='signed keeps legacy residual scale; bounded constrains it to [0, max]')
+parser.add_argument('--olic_res_scale_max', default=0.05, type=float,
+                    help='maximum effective OLIC residual scale in bounded mode')
 parser.add_argument('--olic_gate_init_bias', default=-4.0, type=float,
                     help='initial bias for OLIC gate heads')
 parser.add_argument('--olic_warmup_epochs', default=0, type=int,
@@ -161,6 +171,8 @@ parser.add_argument('--pairwise_loss_coef', default=0.25, type=float,
                     help='loss weight for pairwise same-group supervision')
 parser.add_argument('--pairwise_refine_scale', default=0.5, type=float,
                     help='residual scale for pairwise membership refinement')
+parser.add_argument('--pairwise_support_norm', default='none', choices=['none', 'group_mass'],
+                    help='optionally normalize PMR support by each query soft-assignment mass')
 
 # Box noise ablation
 parser.add_argument('--box_noise_policy', default='none', type=str,
@@ -393,6 +405,8 @@ def validate(test_loader, model, criterion, metrics):
         if args.use_pairwise_refiner and 'pairwise_refine_delta_mean' in outputs:
             metric_logger.update(
                 pairwise_refine_delta_mean=float(outputs['pairwise_refine_delta_mean'].mean().item()),
+                pairwise_support_abs_mean=float(outputs['pairwise_support_abs_mean'].mean().item()),
+                pairwise_group_mass_mean=float(outputs['pairwise_group_mass_mean'].mean().item()),
                 membership_entropy=float(outputs['membership_entropy'].mean().item()),
                 group_olic_disabled=float(outputs['group_olic_disabled'].mean().item()),
             )
@@ -408,6 +422,8 @@ def validate(test_loader, model, criterion, metrics):
                 anchor_valid_obj_per_actor=float(outputs['anchor_valid_obj_per_actor'].mean().item()),
                 shared_table_mean=float(outputs['shared_table_mean'].mean().item()),
                 shared_service_mean=float(outputs['shared_service_mean'].mean().item()),
+                olic_res_actor=float(outputs['olic_res_actor'].mean().item()),
+                olic_res_group=float(outputs['olic_res_group'].mean().item()),
             )
 
         # Keep original coordinates for evaluation alignment.
