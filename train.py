@@ -55,6 +55,22 @@ parser.add_argument('--freeze_backbone', action='store_true', help='freeze ALL b
 parser.add_argument('--unfreeze_blocks', default=0, type=int, help='number of last transformer blocks to unfreeze (for DINOv2 partial finetuning, 0=freeze all if freeze_backbone, or finetune all)')
 parser.add_argument('--backbone_lr_scale', default=0.1, type=float, help='backbone learning rate = base_lr * backbone_lr_scale (for layer-wise LR)')
 parser.add_argument('--hidden_dim', default=256, type=int, help='transformer channel dimension')
+dinov2_adapter_group = parser.add_mutually_exclusive_group()
+dinov2_adapter_group.add_argument('--use_dinov2_multilevel_adapter', dest='use_dinov2_multilevel_adapter', action='store_true',
+                                   help='fuse selected DINOv2 intermediate layers at actor-RoI level')
+dinov2_adapter_group.add_argument('--no_dinov2_multilevel_adapter', dest='use_dinov2_multilevel_adapter', action='store_false',
+                                   help='use only the final DINOv2 feature map (historical behavior)')
+parser.set_defaults(use_dinov2_multilevel_adapter=False)
+parser.add_argument('--dinov2_adapter_layers', default='3,6,9', type=str,
+                    help='zero-based DINOv2 block indices used by actor-RoI adapters')
+parser.add_argument('--dinov2_adapter_dim', default=64, type=int,
+                    help='channel bottleneck dimension for each actor-RoI adapter')
+parser.add_argument('--dinov2_adapter_dropout', default=-1.0, type=float,
+                    help='multi-level adapter dropout; <0 means use --drop_rate')
+parser.add_argument('--dinov2_adapter_scale_init', default=0.05, type=float,
+                    help='initial bounded residual scale for multi-level actor features')
+parser.add_argument('--dinov2_adapter_scale_max', default=0.5, type=float,
+                    help='maximum bounded residual scale for multi-level actor features')
 
 # RoI Align parameters
 parser.add_argument('--num_boxes', default=14, type=int, help='maximum number of actors')
@@ -288,6 +304,28 @@ def main():
     else:
         args.mae_dim = 0
 
+    if args.use_dinov2_multilevel_adapter:
+        if 'dinov2' not in args.backbone.lower():
+            raise ValueError('--use_dinov2_multilevel_adapter requires a DINOv2 backbone')
+        if args.dinov2_adapter_dim <= 0:
+            raise ValueError('--dinov2_adapter_dim must be positive')
+        if not 0.0 <= args.dinov2_adapter_scale_init < args.dinov2_adapter_scale_max:
+            raise ValueError(
+                '--dinov2_adapter_scale_init must satisfy 0 <= init < scale_max'
+            )
+        print_log(save_path, f"----------------------------------------------------------------")
+        print_log(save_path, "DINOv2 multi-level actor adapter: ENABLED")
+        print_log(
+            save_path,
+            f"Adapter cfg: layers={args.dinov2_adapter_layers}, "
+            f"dim={args.dinov2_adapter_dim}, dropout={args.dinov2_adapter_dropout}, "
+            f"scale_init={args.dinov2_adapter_scale_init}, "
+            f"scale_max={args.dinov2_adapter_scale_max}, fusion=actor_roi_only"
+        )
+        print_log(save_path, f"----------------------------------------------------------------")
+    else:
+        print_log(save_path, "DINOv2 multi-level actor adapter: DISABLED")
+
     if args.olic_dropout < 0:
         args.olic_dropout = args.drop_rate
     if args.olic_warmup_epochs < 0:
@@ -503,6 +541,24 @@ def main():
                     train_log.get('group_olic_disabled', 0.0),
                 )
             )
+        if args.use_dinov2_multilevel_adapter and 'dinov2_adapter_scale' in train_log:
+            adapter_layers = [
+                item.strip() for item in args.dinov2_adapter_layers.split(',') if item.strip()
+            ]
+            adapter_weights = ', '.join(
+                f"b{layer}={train_log.get(f'dinov2_adapter_weight_{idx}', 0.0):.3f}"
+                for idx, layer in enumerate(adapter_layers)
+            )
+            print_log(
+                save_path,
+                "DINO-ADAPTER(train): scale=%.4f delta/base=%.4f entropy=%.4f weights=[%s]"
+                % (
+                    train_log.get('dinov2_adapter_scale', 0.0),
+                    train_log.get('dinov2_adapter_delta_ratio', 0.0),
+                    train_log.get('dinov2_adapter_gate_entropy', 0.0),
+                    adapter_weights,
+                )
+            )
         print('Current learning rate is %f' % scheduler.get_last_lr()[0])
         scheduler.step()
 
@@ -556,6 +612,24 @@ def main():
                         test_log.get('pairwise_refine_delta_mean', 0.0),
                         test_log.get('membership_entropy', 0.0),
                         test_log.get('group_olic_disabled', 0.0),
+                    )
+                )
+            if args.use_dinov2_multilevel_adapter and 'dinov2_adapter_scale' in test_log:
+                adapter_layers = [
+                    item.strip() for item in args.dinov2_adapter_layers.split(',') if item.strip()
+                ]
+                adapter_weights = ', '.join(
+                    f"b{layer}={test_log.get(f'dinov2_adapter_weight_{idx}', 0.0):.3f}"
+                    for idx, layer in enumerate(adapter_layers)
+                )
+                print_log(
+                    save_path,
+                    "DINO-ADAPTER(test): scale=%.4f delta/base=%.4f entropy=%.4f weights=[%s]"
+                    % (
+                        test_log.get('dinov2_adapter_scale', 0.0),
+                        test_log.get('dinov2_adapter_delta_ratio', 0.0),
+                        test_log.get('dinov2_adapter_gate_entropy', 0.0),
+                        adapter_weights,
                     )
                 )
             print_log(save_path, "group mAP at 1.0: %.2f" % result['group_mAP_1.0'])
@@ -745,6 +819,18 @@ def train(train_loader, model, criterion, optimizer, epoch):
                     pair_neg_mean=float(loss_dict_reduced['pair_neg_mean'].item()),
                     pair_gap=float(loss_dict_reduced['pair_gap'].item()),
                 )
+        if args.use_dinov2_multilevel_adapter and 'dinov2_adapter_scale' in outputs:
+            adapter_weights = outputs['dinov2_adapter_layer_weights']
+            if adapter_weights.dim() == 1:
+                adapter_weights = adapter_weights.unsqueeze(0)
+            adapter_weights = adapter_weights.mean(dim=0)
+            metric_logger.update(
+                dinov2_adapter_scale=float(outputs['dinov2_adapter_scale'].mean().item()),
+                dinov2_adapter_delta_ratio=float(outputs['dinov2_adapter_delta_ratio'].mean().item()),
+                dinov2_adapter_gate_entropy=float(outputs['dinov2_adapter_gate_entropy'].mean().item()),
+            )
+            for idx, value in enumerate(adapter_weights):
+                metric_logger.update(**{f'dinov2_adapter_weight_{idx}': float(value.item())})
         
         # 显式删除大对象，帮助 GC 回收
         del images, targets, boxes, clean_boxes, outputs, loss, loss_dict
@@ -861,6 +947,18 @@ def validate(test_loader, model, criterion, metrics, epoch):
                     pair_neg_mean=float(loss_dict_reduced['pair_neg_mean'].item()),
                     pair_gap=float(loss_dict_reduced['pair_gap'].item()),
                 )
+        if args.use_dinov2_multilevel_adapter and 'dinov2_adapter_scale' in outputs:
+            adapter_weights = outputs['dinov2_adapter_layer_weights']
+            if adapter_weights.dim() == 1:
+                adapter_weights = adapter_weights.unsqueeze(0)
+            adapter_weights = adapter_weights.mean(dim=0)
+            metric_logger.update(
+                dinov2_adapter_scale=float(outputs['dinov2_adapter_scale'].mean().item()),
+                dinov2_adapter_delta_ratio=float(outputs['dinov2_adapter_delta_ratio'].mean().item()),
+                dinov2_adapter_gate_entropy=float(outputs['dinov2_adapter_gate_entropy'].mean().item()),
+            )
+            for idx, value in enumerate(adapter_weights):
+                metric_logger.update(**{f'dinov2_adapter_weight_{idx}': float(value.item())})
 
         # Keep original coordinates for evaluation alignment.
         make_txt(clean_boxes, infos, outputs, name_to_vid, file_path)

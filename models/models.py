@@ -10,6 +10,7 @@ from .group_transformer import build_group_transformer
 from .feed_forward import MLP
 from .hoi_graph import FrameHOIGraph, TemporalEncoder
 from .videomae_adapter import VideoMAEAdapter
+from .dinov2_multilevel_adapter import MultiDepthActorAdapter
 
 
 class GADTR(nn.Module):
@@ -24,6 +25,31 @@ class GADTR(nn.Module):
 
         self.hidden_dim = args.hidden_dim
         self.backbone = build_backbone(args)
+
+        self.use_dinov2_multilevel_adapter = bool(
+            getattr(args, 'use_dinov2_multilevel_adapter', False)
+        )
+        self.dinov2_adapter_layer_indices = tuple(
+            getattr(self.backbone, 'intermediate_layer_indices', tuple())
+        )
+        if self.use_dinov2_multilevel_adapter:
+            if 'dinov2' not in str(args.backbone).lower():
+                raise ValueError("The multi-level actor adapter requires a DINOv2 backbone")
+            adapter_dropout = float(
+                getattr(args, 'dinov2_adapter_dropout', args.drop_rate)
+            )
+            if adapter_dropout < 0.0:
+                adapter_dropout = float(args.drop_rate)
+            self.dinov2_actor_adapter = MultiDepthActorAdapter(
+                in_channels=self.backbone.num_channels,
+                hidden_dim=self.hidden_dim,
+                num_layers=len(self.dinov2_adapter_layer_indices),
+                crop_size=args.crop_size,
+                bottleneck_dim=int(getattr(args, 'dinov2_adapter_dim', 64)),
+                dropout=adapter_dropout,
+                scale_init=float(getattr(args, 'dinov2_adapter_scale_init', 0.05)),
+                scale_max=float(getattr(args, 'dinov2_adapter_scale_max', 0.5)),
+            )
 
         # RoI Align
         self.crop_size = args.crop_size
@@ -212,7 +238,11 @@ class GADTR(nn.Module):
         self.relu = F.relu
 
         for name, m in self.named_modules():
-            if 'backbone' not in name and 'group_transformer' not in name:
+            if (
+                'backbone' not in name
+                and 'group_transformer' not in name
+                and 'dinov2_actor_adapter' not in name
+            ):
                 if isinstance(m, nn.Linear):
                     nn.init.kaiming_normal_(m.weight)
                     if m.bias is not None:
@@ -634,7 +664,12 @@ class GADTR(nn.Module):
         boxes_idx = torch.stack(boxes_idx).to(device=boxes.device)
         boxes_idx_flat = torch.reshape(boxes_idx, (bs * t * n, ))                       # [b x t x n]
 
-        features, pos = self.backbone(x)
+        backbone_output = self.backbone(x)
+        if len(backbone_output) == 3:
+            features, pos, intermediate_features = backbone_output
+        else:
+            features, pos = backbone_output
+            intermediate_features = None
         _, c, oh, ow = features.shape                                                   # [b x t, d, oh, ow]
 
         src = self.input_proj(features)
@@ -673,6 +708,21 @@ class GADTR(nn.Module):
         actor_features = F.relu(actor_features)
         actor_features = self.drop_emb(actor_features)
         actor_features = actor_features.reshape(bs, t, n, self.hidden_dim)
+
+        if self.use_dinov2_multilevel_adapter:
+            if intermediate_features is None:
+                raise RuntimeError(
+                    "DINOv2 multi-level adapter is enabled but the backbone returned no intermediate maps"
+                )
+            actor_features_bt, dinov2_adapter_diag = self.dinov2_actor_adapter(
+                intermediate_features=intermediate_features,
+                boxes_list=boxes_list,
+                base_actor_tokens=actor_features.reshape(bs * t, n, self.hidden_dim),
+                valid_actor_mask=(~dummy_mask),
+            )
+            actor_features = actor_features_bt.reshape(bs, t, n, self.hidden_dim)
+        else:
+            dinov2_adapter_diag = None
 
         # add positional information to box features
         box_pos_emb = self.box_pos_emb(boxes)
@@ -863,5 +913,21 @@ class GADTR(nn.Module):
             "shared_table_mean": shared_table_mean.detach(),
             "shared_service_mean": shared_service_mean.detach(),
         }
+
+        if dinov2_adapter_diag is not None:
+            out.update(
+                {
+                    "dinov2_adapter_scale": dinov2_adapter_diag["scale"].detach(),
+                    "dinov2_adapter_layer_weights": dinov2_adapter_diag[
+                        "layer_weight_mean"
+                    ].detach(),
+                    "dinov2_adapter_gate_entropy": dinov2_adapter_diag[
+                        "gate_entropy"
+                    ].detach(),
+                    "dinov2_adapter_delta_ratio": dinov2_adapter_diag[
+                        "delta_ratio"
+                    ].detach(),
+                }
+            )
 
         return out

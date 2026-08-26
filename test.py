@@ -50,6 +50,17 @@ parser.add_argument('--frozen_batch_norm', action='store_true', help='use frozen
 parser.add_argument('--freeze_backbone', action='store_true', help='freeze backbone parameters (for DINOv2)')
 parser.add_argument('--unfreeze_blocks', default=0, type=int, help='number of last transformer blocks to unfreeze (for DINOv2 partial finetuning)')
 parser.add_argument('--hidden_dim', default=256, type=int, help='transformer channel dimension')
+dinov2_adapter_group = parser.add_mutually_exclusive_group()
+dinov2_adapter_group.add_argument('--use_dinov2_multilevel_adapter', dest='use_dinov2_multilevel_adapter', action='store_true',
+                                   help='fuse selected DINOv2 intermediate layers at actor-RoI level')
+dinov2_adapter_group.add_argument('--no_dinov2_multilevel_adapter', dest='use_dinov2_multilevel_adapter', action='store_false',
+                                   help='use only the final DINOv2 feature map')
+parser.set_defaults(use_dinov2_multilevel_adapter=False)
+parser.add_argument('--dinov2_adapter_layers', default='3,6,9', type=str)
+parser.add_argument('--dinov2_adapter_dim', default=64, type=int)
+parser.add_argument('--dinov2_adapter_dropout', default=-1.0, type=float)
+parser.add_argument('--dinov2_adapter_scale_init', default=0.05, type=float)
+parser.add_argument('--dinov2_adapter_scale_max', default=0.5, type=float)
 
 # RoI Align parameters
 parser.add_argument('--num_boxes', default=14, type=int, help='maximum number of actors')
@@ -402,6 +413,18 @@ def validate(test_loader, model, criterion, metrics):
                     pair_neg_mean=float(loss_dict_reduced['pair_neg_mean'].item()),
                     pair_gap=float(loss_dict_reduced['pair_gap'].item()),
                 )
+        if args.use_dinov2_multilevel_adapter and 'dinov2_adapter_scale' in outputs:
+            adapter_weights = outputs['dinov2_adapter_layer_weights']
+            if adapter_weights.dim() == 1:
+                adapter_weights = adapter_weights.unsqueeze(0)
+            adapter_weights = adapter_weights.mean(dim=0)
+            metric_logger.update(
+                dinov2_adapter_scale=float(outputs['dinov2_adapter_scale'].mean().item()),
+                dinov2_adapter_delta_ratio=float(outputs['dinov2_adapter_delta_ratio'].mean().item()),
+                dinov2_adapter_gate_entropy=float(outputs['dinov2_adapter_gate_entropy'].mean().item()),
+            )
+            for idx, value in enumerate(adapter_weights):
+                metric_logger.update(**{f'dinov2_adapter_weight_{idx}': float(value.item())})
         if args.use_olic and 'small_valid_obj_per_actor' in outputs:
             metric_logger.update(
                 small_valid_obj_per_actor=float(outputs['small_valid_obj_per_actor'].mean().item()),

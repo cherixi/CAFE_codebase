@@ -103,6 +103,20 @@ class DinoV2Backbone(nn.Module):
         print(f"[DinoV2Backbone] num_channels = {self.num_channels}")
         
         self.patch_size = 14
+
+        self.use_multilevel_adapter = bool(
+            getattr(args, 'use_dinov2_multilevel_adapter', False)
+        )
+        raw_adapter_layers = getattr(args, 'dinov2_adapter_layers', '3,6,9')
+        if isinstance(raw_adapter_layers, str):
+            adapter_layers = [
+                int(item.strip())
+                for item in raw_adapter_layers.split(',')
+                if item.strip()
+            ]
+        else:
+            adapter_layers = [int(item) for item in raw_adapter_layers]
+        self.intermediate_layer_indices = tuple(sorted(set(adapter_layers)))
         
         # 冻结/解冻策略
         freeze_backbone = getattr(args, 'freeze_backbone', False)
@@ -136,6 +150,25 @@ class DinoV2Backbone(nn.Module):
             # 全部解冻（全参数微调）
             print("[DinoV2Backbone] All backbone parameters are TRAINABLE (full fine-tuning)")
 
+        total_blocks = len(self.backbone.blocks)
+        if self.use_multilevel_adapter:
+            if not self.intermediate_layer_indices:
+                raise ValueError("dinov2_adapter_layers must contain at least one layer")
+            invalid_layers = [
+                idx for idx in self.intermediate_layer_indices
+                if idx < 0 or idx >= total_blocks - 1
+            ]
+            if invalid_layers:
+                raise ValueError(
+                    "DINOv2 adapter layers must be zero-based intermediate block indices "
+                    f"in [0, {total_blocks - 2}], got {invalid_layers}"
+                )
+            print(
+                "[DinoV2Backbone] Multi-level outputs: blocks "
+                + ", ".join(str(idx) for idx in self.intermediate_layer_indices)
+                + f"; final block {total_blocks - 1} remains the base feature"
+            )
+
     def forward(self, x):
         """
         Args:
@@ -153,16 +186,34 @@ class DinoV2Backbone(nn.Module):
             x = F.interpolate(x, size=(new_h, new_w), mode='bilinear', align_corners=False)
             h, w = new_h, new_w
         
-        # DINOv2 前向传播
-        output = self.backbone.forward_features(x)
-        patch_tokens = output['x_norm_patchtokens']  # [B*T, N_patches, D]
+        if self.use_multilevel_adapter:
+            layer_indices = list(self.intermediate_layer_indices)
+            final_layer_idx = len(self.backbone.blocks) - 1
+            patch_tokens_by_layer = self.backbone.get_intermediate_layers(
+                x,
+                n=layer_indices + [final_layer_idx],
+                reshape=False,
+                return_class_token=False,
+                norm=True,
+            )
+            patch_tokens = patch_tokens_by_layer[-1]
+        else:
+            output = self.backbone.forward_features(x)
+            patch_tokens = output['x_norm_patchtokens']  # [B*T, N_patches, D]
         
         # Reshape 为 2D 特征图: [B*T, H_grid*W_grid, D] -> [B*T, D, H_grid, W_grid]
         h_grid = h // p
         w_grid = w // p
         feature_map = patch_tokens.reshape(b, h_grid, w_grid, self.num_channels).permute(0, 3, 1, 2)
         
-        return feature_map
+        if not self.use_multilevel_adapter:
+            return feature_map
+
+        intermediate_maps = tuple(
+            tokens.reshape(b, h_grid, w_grid, self.num_channels).permute(0, 3, 1, 2).contiguous()
+            for tokens in patch_tokens_by_layer[:-1]
+        )
+        return feature_map.contiguous(), intermediate_maps
 
 
 class Joiner(nn.Sequential):
@@ -173,11 +224,18 @@ class Joiner(nn.Sequential):
         bs, t, _, h, w = x.shape
         x = x.reshape(bs * t, 3, h, w)
 
-        features = self[0](x)
+        backbone_output = self[0](x)
+        intermediate_features = None
+        if isinstance(backbone_output, tuple):
+            features, intermediate_features = backbone_output
+        else:
+            features = backbone_output
         _, c, oh, ow = features.shape
 
         pos = self[1](features).to(x.dtype)
 
+        if intermediate_features is not None:
+            return features, pos, intermediate_features
         return features, pos
 
 
@@ -192,4 +250,5 @@ def  build_backbone(args):
     
     model = Joiner(backbone, pos_embed)
     model.num_channels = backbone.num_channels
+    model.intermediate_layer_indices = getattr(backbone, 'intermediate_layer_indices', tuple())
     return model
